@@ -1,4 +1,17 @@
-# Soft-core bench — measuring candidates on the real part
+# Soft-core bench — SUPERSEDED
+
+> **The soft RISC-V was dropped.** Game logic moved to the STM32F401 (see
+> `docs/architecture-pivot.md`), which returns ~20 M9K blocks and ~3-5K LEs to the pool. There is no
+> longer a core to choose, so the candidate table below is moot.
+>
+> **What survives and is still worth using:** `template.qsf` (correct device/speed-grade settings,
+> DSP balancing, memory inference) and the measurement method — registered wrapper I/O, restricted
+> Fmax, judging at expected whole-design utilisation. Apply both to the metatile renderer, the
+> mixer, and the later TBDR core.
+>
+> Also still needed: the "capture from the unmodified sd2snes_mini build" numbers at the bottom.
+
+## (historical) Measuring candidates on the real part
 
 Purpose: pick the RISC-V core on **measured** LE count and Fmax for `EP4CE15F17C8N`, not on
 published figures. Nearly all quoted core sizes are for LUT6 architectures (Xilinx) or faster speed
