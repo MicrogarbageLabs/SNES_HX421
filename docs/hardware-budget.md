@@ -168,10 +168,78 @@ Good news: this is sizing, not architecture. `pool_bytes`, `track_count` and per
 `AUDIO_RING_STREAM_FRAMES` is a hard `#define` sizing a fixed array — a one-line build knob. The
 mixer, arbiter, resampler and drift PLL are unchanged.
 
+## MEASURED — baseline build, 2026-07-19
+
+Built the unmodified `sd2snes_mini` (`main` revision) with Quartus Prime Lite **25.1std**, which does
+still support Cyclone IV E. Replaces the estimates above.
+
+```
+Family / Device            Cyclone IV E / EP4CE15F17C8
+Total logic elements       410 / 15,408   (  3% )     estimated 2,500-3,500
+M9K blocks                   1 / 56       (  2% )     estimated ~5
+Total memory bits           69 / 516,096  ( <1% )
+Embedded multipliers         0 / 112      (  0% )
+Total pins                 144 / 166      ( 87% )     <- the real constraint
+```
+
+**The base is tiny** — essentially the whole device is ours. `sd2snes_mini` is the minimal cart core
+(address decode, SPI, MCU command); the enhancement-chip cores are separate projects.
+
+**This weakens the primary argument for the STM32 pivot.** `docs/architecture-pivot.md` was justified
+substantially on BRAM scarcity, which rested on ~5 blocks for the base plus ~20 for a soft core. With
+the base at 1 block, 55 remain: staging 12 + mailbox 1 + mixer 9 + metatile 5 + prefetch 2 = 29,
+leaving **26 blocks — enough for a soft RISC-V** (16 KB IMEM + 8 KB I-cache) with the TBDR tile buffer
+still fitting. The pivot's other justifications stand (an M4F at 84 MHz beats a 40 MHz core that is
+memory-stalled regardless; SWD debugging; existing toolchain; HX-420 portability) and the decision
+holds — but it should be understood as resting on those, not on a memory constraint that does not
+exist.
+
+**Pins, not logic, are now the scarce resource**: 144/166 used, 22 free. Any new external interface
+(DAC for the mixer output, debug header) must be checked against that before it is designed in.
+
+### PSRAM, from `main.v` port comments + `pll.v`
+
+```
+MK3:  2x PSRAM 64Mbit, 16-bit, 70 ns   (16 MB total)
+      ROM_ADDR [21:0], ROM_DATA [15:0]  <- SHARED
+      ROM_1CE / ROM_2CE                 <- separate chip enables only
+PLL:  8 MHz in x12 = 96 MHz FPGA clock  (~7 clocks per 70 ns access)
+```
+
+Derived ceiling **2 B / 70 ns = ~28.6 MB/s**. Workloads at 60 Hz:
+
+| workload | per frame | MB/s | % |
+|---|---|---|---|
+| tilemap edge strips, 3 layers | ~2.9 KB | 0.17 | 0.6% |
+| full frame rendered to PSRAM + streamed back | ~57 KB | 3.4 | 12% |
+| TBDR (tile buffer stays in BRAM) | ~64 KB | 3.8 | 13% |
+| audio, 8 voices @22 kHz | ~6 KB | 0.35 | 1% |
+
+Comfortable even summed — ~8x headroom on the heaviest case.
+
+**Interleaving the two chips is NOT possible.** They share the address bus, data bus, OE/WE and byte
+enables; only the chip enables differ. Two addresses can never be presented at once, so chip B's
+access cannot overlap chip A's data phase. The dual CEs are a **capacity** mechanism (2 x 64 Mbit),
+not a bandwidth one. Page mode is the only real lever for sequential throughput (~20-30 ns within an
+open row vs 70 ns random) and needs the chips' part numbers to evaluate.
+
+**Do not optimise speculatively.** At 12-13% utilisation, build the straightforward controller,
+profile, and only then consider page mode — page-mode controllers fail in ways that look like random
+data corruption.
+
+### Rendering strategy implication
+
+Rendering a line of character blocks is **sequential**, the best case for PSRAM. Streaming each strip
+as it is rendered means BRAM holds one strip in flight (~2 KB) instead of a whole frame (~28 KB), and
+pipelines the read latency behind the next strip's render. The BRAM saving matters more than the
+bandwidth here.
+
 ## Open items, in priority order
 
-1. **Build the stock baseline** (needs Docker). Yields: M9K the base consumes, SRAM the firmware
-   leaves, and the real SPI divisor. Everything above is sized around these three unknowns.
+1. ~~Build the stock baseline for the FPGA numbers~~ — **DONE 2026-07-19**, see MEASURED above.
+   Still outstanding from the ARM half (needs Docker or a native arm-none-eabi toolchain): the SRAM
+   the stock firmware leaves free, and the **real SPI baud divisor** (18 MHz is from a web source,
+   not read out of the firmware).
 2. **Bulk PSRAM read** on the M3, plus a prefetch FIFO in the FPGA read path if PSRAM blocking can
    exceed 444 ns.
 3. **Chunk the video PSRAM→BRAM transfer** so audio reads get a slot every few microseconds rather
