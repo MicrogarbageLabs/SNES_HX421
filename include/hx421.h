@@ -156,6 +156,16 @@ HX421_API uint32_t    hx421_fft_bands(uint32_t *out, uint32_t n);
 HX421_API void        hx421_post_joypads(const uint16_t pads[HX421_MAX_PADS]);
 HX421_API void        hx421_post_mouse(int dx, int dy, unsigned buttons); /* bit0 L, bit1 R */
 
+/* Overlay-cursor travel limits, inclusive, in screen pixels, addressing the
+ * sprite's TOP-LEFT corner. Defaults (8,240,8,208) hold an 8x8 cursor exactly
+ * inside a 240x208 FMV picture: content occupies scanlines 8..215 and a sprite
+ * at Y=n renders on n..n+7. Adjust when the display crops overscan, or when the
+ * source clip carries its own letterbox (measure with tools/hx421_fmv_bars.c).
+ * set_clamp orders its arguments defensively and re-clamps the live position. */
+HX421_API void        hx421_cursor_set_clamp(int left, int right, int top, int bottom);
+HX421_API void        hx421_cursor_get_clamp(int *left, int *right, int *top, int *bottom);
+HX421_API void        hx421_cursor_get_pos(int *x, int *y);
+
 /* ---- Cart reset marshalling -------------------------------------------- */
 HX421_API void        hx421_cart_reset_begin(void); /* hold; restage window */
 HX421_API int         hx421_cart_reset_ready(void); /* 1 once hold_ms elapsed */

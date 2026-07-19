@@ -98,6 +98,32 @@ static int              g_rom_loaded;            /* HX421_ROM served a real boot
 #define HX_SIP_LINES       (HX_SIP_CHR_BYTES / HX_SIP_BPL) /* = 2                 */
 #define HX_SIP_TILE_ROW    8u                      /* tile row (line ~64) >> V=18 */
 
+/* ---- sprite-overlay window layout (used by the emitter below) ------------
+ * SHARED regions above both frame buffers (buffers end at 0x5FFF; the kernel
+ * image lives at $8000+; strobes sit at 0x7800/0x79C1). Not double-buffered:
+ * OAM/CHR/CGRAM are pushed to the PPU every frame regardless.
+ *
+ * GOTCHA (from mgapi): OBJ CHR starts at VRAM word 28880 (tile 269), NOT 28864.
+ * At BG1 CHR base 0x4000 the FMV's BLANK_TILE (780) aliases to word 28864, so
+ * sprite CHR there paints the crosshair into the FMV letterbox on alternate
+ * frames. BG1 never references past tile 780, so 28880+ is genuinely free. */
+#define HX_OFF_SPR_CHR     0x6000u   /* 384 B: 12 OBJ tiles                  */
+#define HX_OFF_SPR_CGRAM   0x6180u   /* 128 B: OBJ pal 0-3 (cursor + holes)  */
+#define HX_OFF_SPR_PAL47   0x6200u   /* 128 B: OBJ pal 4-7 (FFT gradient)    */
+#define HX_OFF_SPR_OAM     0x6280u   /* 544 B: full OAM (low 512 + high 32)  */
+#define HX_SPR_CHR_BYTES    384u
+#define HX_SPR_CGRAM_BYTES  128u
+#define HX_SPR_OAM_BYTES    544u
+#define HX_SPR_OAM_ACTIVE   256u     /* sprites 0-63 low table (60 Hz push)  */
+#define HX_SPR_VRAM_WORD  28880u
+#define HX_SPR_TILE_CURSOR  269u
+#define HX_SPR_TILE_HOLE    270u
+#define HX_SPR_FFT_TILE0    271u     /* 271..279 = fill level 0..8           */
+#define HX_SPR_TILE_CAP     280u
+#define HX_SPR_OBSEL       0x03u     /* size pair 8/16, namesel 0, base 0x6000 */
+#define HX_SPR_CGADD        128u     /* OBJ palette 0 = CGRAM index 128      */
+#define HX_SPR_FFT_CGADD    192u     /* OBJ palette 4                        */
+
 /* ---- 65816 DMA-body emitter (the max-bandwidth NMI-emitter technique) ----
  * The coprocessor (here the DLL) bakes the per-frame VRAM push as a straight
  * run of immediate-loaded DMA slots -- no descriptor list for the SNES to
@@ -191,7 +217,21 @@ static size_t hx_emit_dma_body(uint32_t base, uint32_t tmap_src) {
 #define FMV_BLANK_TILE  FMV_TILES            /* tile 780 = permanent black blank */
 /* band split: content 0..779 plus the blank tile 780 in the last band, each
  * chunk under the ~7.4 KB vblank burst budget */
-static const int fmv_band_tiles[4] = { 150, 196, 220, 215 };   /* sum = 781 */
+/* Split balanced against the ~7452 B vblank burst budget (8/8 letterbox) with
+ * the sprite overlay AND the tilemap spread 4 ways (512 B/band instead of the
+ * whole 2 KB choking band 0 — the back tilemap isn't displayed until the
+ * band-3 flip, so it can be filled incrementally):
+ *   b0 205t 6560 + TM 512 + OAM 256                           = 7328
+ *   b1 184t 5888 + TM 512 + OBJ CHR 384 + pal 256 + OAM 256   = 7296
+ *   b2 205t 6560 + TM 512 + OAM 256                           = 7328
+ *   b3 187t 5984 + TM 512 + CGRAM 256 + OAM 544               = 7296
+ * Sum 781 tiles (780 content + blank). Spare is now ~124 B on EVERY band
+ * rather than pooled on one — that even spread is what leaves room for the
+ * FFT overlay's tilemap updates.
+ * NOTE: our kernel has no cycle-budgeted chainer (the emitter replaced it), so
+ * an overrun is NOT deferred — it writes during active display and is visible.
+ * Budget discipline is entirely here. */
+static const int fmv_band_tiles[4] = { 205, 184, 205, 187 };   /* sum = 781 */
 
 /* the PSRAM-analog frame store (host RAM): the CURRENT decoded frame. Only a
  * subframe band of this is copied into the window (BRAM) per NMI. */
@@ -223,11 +263,300 @@ static void e_dma_cgram_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size,
     e_lda_sta8(c, p, 0x01, HW_MDMAEN);          /* fire                 */
 }
 
-/* emit BG setup (mode 1, BG1 on main screen). BG1SC (tilemap base) and BG12NBA
- * (CHR base) are set per band — they select/flip the A/B double buffers. */
+/* One baked OAM DMA slot: src -> OAM from word `oamaddr` (0 = sprite 0),
+ * `size` bytes. OAMADDL/H is a WORD address, so the low table is words
+ * 0..255 and the high table starts at word 256. */
+static void e_dma_oam_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size,
+                           uint16_t oamaddr) {
+    e8(c, p, 0xC2); e8(c, p, 0x20);             /* rep #$20             */
+    e_lda_sta16(c, p, oamaddr, 0x2102u);        /* OAMADDL/H            */
+    e8(c, p, 0xE2); e8(c, p, 0x20);             /* sep #$20             */
+    e_lda_sta8(c, p, 0x04, HW_BBAD0);           /* B-bus = OAMDATA      */
+    e_lda_sta8(c, p, 0x00, HW_DMAP0);           /* 1 reg, A increments  */
+    e8(c, p, 0xC2); e8(c, p, 0x20);             /* rep #$20             */
+    e_lda_sta16(c, p, src, HW_A1T0L);
+    e_lda_sta16(c, p, size, HW_DAS0L);
+    e8(c, p, 0xE2); e8(c, p, 0x20);             /* sep #$20             */
+    e_lda_sta8(c, p, 0x01, HW_MDMAEN);          /* fire                 */
+}
+
+/* BG1 scroll registers. Both are WRITE-TWICE (low byte then high byte).
+ *
+ * SNES quirk: the first displayed scanline shows BG line BGnVOFS+1, so VOFS
+ * must be -1 (0x3FF in the 10-bit field) for screen line N to show BG line N.
+ * Left at 0 the entire image sits one line high: our content (BG lines 8..215)
+ * renders on screen 7..214, so the top content row hides under the letterbox
+ * and the last screen line (215) shows blank BG past the content — the picture
+ * appears to end a line early. These were never initialised at all before. */
+static void e_bg_scroll(uint8_t *c, size_t *p) {
+    e_lda_sta8(c, p, 0x00, 0x210Du);            /* BG1HOFS low  = 0     */
+    e8(c, p, 0x8D); e16(c, p, 0x210Du);         /* BG1HOFS high = 0 (A still 0) */
+    e_lda_sta8(c, p, 0xFF, 0x210Eu);            /* BG1VOFS low  = 0xFF  */
+    e_lda_sta8(c, p, 0x03, 0x210Eu);            /* BG1VOFS high = 0x03 -> -1 */
+}
+
+/* emit BG setup (mode 1, BG1 + OBJ on main screen). BG1SC (tilemap base) and
+ * BG12NBA (CHR base) are set per band — they select/flip the A/B double
+ * buffers. OBSEL is static (OBJ CHR base 0x6000, 8/16 size pair). */
 static void e_bg_setup(uint8_t *c, size_t *p) {
     e_lda_sta8(c, p, 0x01, 0x2105u);            /* BGMODE = mode 1      */
-    e_lda_sta8(c, p, 0x01, 0x212Cu);            /* TM: BG1 on main      */
+    e_lda_sta8(c, p, HX_SPR_OBSEL, 0x2101u);    /* OBSEL: OBJ CHR base  */
+    e_lda_sta8(c, p, 0x11, 0x212Cu);            /* TM: BG1 + OBJ on main*/
+    e_bg_scroll(c, p);                          /* HOFS 0, VOFS -1      */
+}
+
+/* ============ sprite overlay ("film critic": cursor + holes + FFT) ========
+ * SHARED window regions above both frame buffers (buffers end at 0x5FFF; the
+ * kernel image lives at $8000+; strobes are at 0x7800/0x79C1) — one live copy,
+ * not double-buffered: OAM/CHR/CGRAM are pushed to the PPU every frame anyway.
+ *
+ * VRAM: all 12 OBJ tiles sit CONTIGUOUSLY at word 28880 (OBSEL base 0x6000 +
+ * tile 269*16) and upload as ONE slot on an EARLY band — a separate late slot
+ * risks being starved when the burst runs long.
+ *
+ * GOTCHA (from mgapi): word 28864 (tile 268) is AVOIDED. At BG1 CHR base
+ * 0x4000 the FMV's BLANK_TILE (780) aliases to that same word, so sprite CHR
+ * there paints the crosshair into the FMV letterbox on alternate frames. BG1
+ * never references past tile 780, so 28880+ is genuinely free. */
+static int g_spr_cx = 124, g_spr_cy = 100;   /* cursor position (screen px)  */
+
+/* Cursor travel limits (inclusive, sprite top-left in screen px). Defaults put
+ * the 8x8 cursor exactly inside the FMV picture: content is BG rows 1..26 =
+ * scanlines 8..215, and a sprite at Y=n renders on n..n+7, so 8..208 reaches
+ * both borders. Verified against the clip itself with tools/hx421_fmv_bars.c —
+ * movie.fmv has NO baked-in letterbox (minimum black rows 0 top and bottom),
+ * so the frame's own border is the only limit. Overridable at runtime because
+ * display overscan can crop a line or two of what's nominally visible. */
+static int g_spr_clamp_l = 8, g_spr_clamp_r = 240;
+static int g_spr_clamp_t = 8, g_spr_clamp_b = 208;
+
+/* OAM allocation. Sprite-vs-sprite layering is by OAM INDEX (lowest = front),
+ * NOT the priority bits — so the order here IS the draw order:
+ *   0        cursor        (in front of everything)
+ *   1..32    FFT bars      (8 bands x [cap, 3 fill rows]) — over the holes
+ *   33..48   bullet holes  (16, FIFO)
+ * 49 of the 64 sprites the 256-byte low-table push covers. */
+#define HX_FFT_SPR0        1u
+#define HX_SPR_POOL_FIRST 33u
+#define HX_SPR_POOL_LAST  48u
+static struct { uint8_t x, y, pal, active; } g_spr_hole[64];   /* [33..48] used */
+
+/* --- FFT spectrum bars: 8 bands, 8 px wide, up to 24 px tall, green->yellow->
+ * red by row, with falling peak caps. Placed with a 4 px border off the FMV
+ * picture's left and bottom edges (picture is x 8..247, y 8..215):
+ *   bars x 12..75, bottom row y 204..211, top row y 188..195. */
+#define HX_FFT_BANDS   8
+#define HX_FFT_ROWS    3
+#define HX_FFT_MAXH   (HX_FFT_ROWS * 8)     /* 24 px */
+#define HX_FFT_BASE_X 12u                   /* leftmost bar X (4 px border)  */
+#define HX_FFT_BOT_Y  204u                  /* Y of the BOTTOM row's sprite  */
+#define HX_FFT_CAP_Y  212u                  /* one past the bars' last line  */
+#define HX_FFT_FLOOR  16                    /* noise floor before scaling    */
+static uint8_t g_fft_lvl[HX_FFT_BANDS];     /* smoothed band level 0..255    */
+static uint8_t g_fft_h[HX_FFT_BANDS];       /* bar height 0..24 px           */
+static uint8_t g_fft_peak[HX_FFT_BANDS];    /* peak-hold height, falls 1px/f */
+/* Per-band gain (x256) compensating the natural bass->treble rolloff, so the
+ * high bands aren't pinned at 1 px. Same curve as the reference. */
+static const uint16_t g_fft_gain[HX_FFT_BANDS] = { 40, 39, 38, 45, 51, 59, 96, 256 };
+static unsigned        g_spr_next_hole = HX_SPR_POOL_FIRST;
+static unsigned        g_spr_prev_left;        /* left-button edge detect  */
+static int             g_spr_cursor_hidden;    /* hidden while right held  */
+static uint32_t        g_spr_rng = 0x1234567u; /* LCG for palette variety  */
+static AudioObjHandle  g_spr_bullet;           /* gunshot SFX (0 = none)   */
+
+/* 8-row 1-bit mask -> one 8x8 4bpp tile: set bit = colour index 1, clear = 0
+ * (transparent). Plane 0 carries the mask; planes 1-3 stay zero. */
+static void spr_build_tile_idx1(uint8_t tile[32], const uint8_t mask[8]) {
+    memset(tile, 0, 32);
+    for (int y = 0; y < 8; ++y) tile[2 * y] = mask[y];
+}
+/* Two-tone tile: pixels inside `inner` get colour index 2, pixels in `outer`
+ * but not `inner` get index 1, everything else transparent. Index bits come
+ * from the bitplanes, so plane 0 carries the rim and plane 1 the centre. */
+static void spr_build_tile_idx12(uint8_t tile[32], const uint8_t outer[8],
+                                 const uint8_t inner[8]) {
+    memset(tile, 0, 32);
+    for (int y = 0; y < 8; ++y) {
+        tile[2 * y]     = (uint8_t)(outer[y] & (uint8_t)~inner[y]);  /* -> index 1 */
+        tile[2 * y + 1] = (uint8_t)(outer[y] & inner[y]);            /* -> index 2 */
+    }
+}
+
+/* write one BGR555 palette entry as explicit LE bytes (portable, no aliasing) */
+static void spr_pal_entry(uint8_t *base, int pal, int idx, int r, int g, int b) {
+    uint16_t v = (uint16_t)(((b >> 3) << 10) | ((g >> 3) << 5) | (r >> 3));
+    base[(pal * 16 + idx) * 2 + 0] = (uint8_t)v;
+    base[(pal * 16 + idx) * 2 + 1] = (uint8_t)(v >> 8);
+}
+
+/* Build the static OBJ assets into the window ONCE (FMV start). */
+static void hx_spr_build_assets(void) {
+    static const uint8_t cursor[8]     = { 0x18,0x18,0x18,0xFF,0xFF,0x18,0x18,0x18 };
+    /* Bullet hole: bright scorched RIM around a dark centre. The rim is what
+     * keeps it visible over black areas of the video; the dark centre is what
+     * makes it read as a hole rather than a dot. */
+    static const uint8_t hole_out[8]   = { 0x3C,0x7E,0xFF,0xFF,0xFF,0xFF,0x7E,0x3C };
+    static const uint8_t hole_in[8]    = { 0x00,0x3C,0x7E,0x7E,0x7E,0x7E,0x3C,0x00 };
+    uint8_t *chr = &g_window[HX_OFF_SPR_CHR];
+    memset(chr, 0, HX_SPR_CHR_BYTES);
+    spr_build_tile_idx1(chr + 0 * 32, cursor);                    /* tile 269 */
+    spr_build_tile_idx12(chr + 1 * 32, hole_out, hole_in);        /* tile 270 */
+    for (int n = 0; n <= 8; ++n) {                        /* 271..279 fill 0..8 */
+        uint8_t mask[8];
+        for (int row = 0; row < 8; ++row)
+            mask[row] = (uint8_t)((row >= 8 - n) ? 0xFF : 0x00);
+        spr_build_tile_idx1(chr + (2 + n) * 32, mask);
+    }
+    { uint8_t cap[8] = { 0xFF, 0xFF, 0, 0, 0, 0, 0, 0 };  /* tile 280: 2px cap */
+      spr_build_tile_idx1(chr + 11 * 32, cap); }
+
+    uint8_t *cg = &g_window[HX_OFF_SPR_CGRAM];            /* OBJ pal 0-3 */
+    memset(cg, 0, HX_SPR_CGRAM_BYTES);
+    spr_pal_entry(cg, 0, 1,  64, 255,  96);               /* cursor: green   */
+    /* Hole tints, picked at random per shot: entry 1 = rim, entry 2 = centre.
+     * Rims carry the luminance so a hole never vanishes over black frames
+     * (the earlier flat near-black tints did); centres stay dark so it reads
+     * as a puncture rather than a sticker. */
+    spr_pal_entry(cg, 1, 1, 196,  96,  56);  spr_pal_entry(cg, 1, 2,  60, 24, 16); /* rust  */
+    spr_pal_entry(cg, 2, 1, 170, 126,  76);  spr_pal_entry(cg, 2, 2,  52, 34, 20); /* brown */
+    spr_pal_entry(cg, 3, 1, 176,  60,  46);  spr_pal_entry(cg, 3, 2,  55, 16, 14); /* red   */
+
+    uint8_t *cf = &g_window[HX_OFF_SPR_PAL47];            /* OBJ pal 4-7 */
+    memset(cf, 0, HX_SPR_CGRAM_BYTES);
+    spr_pal_entry(cf, 0, 1, 255, 255, 255);               /* pal4: peak cap  */
+    spr_pal_entry(cf, 1, 1,  40, 230,  60);               /* pal5: green     */
+    spr_pal_entry(cf, 2, 1, 240, 220,  40);               /* pal6: yellow    */
+    spr_pal_entry(cf, 3, 1, 240,  60,  40);               /* pal7: red       */
+}
+
+/* Rebuild the live OAM. High table stays ALL ZERO (every sprite 8x8, X<256),
+ * which is what makes the 256-byte low-only pushes self-consistent between
+ * the once-per-frame full 544-byte push. */
+static void hx_spr_write_oam(void) {
+    uint8_t *oam = &g_window[HX_OFF_SPR_OAM];
+    memset(oam, 0, HX_SPR_OAM_BYTES);
+    for (unsigned i = 0; i < 128; ++i) oam[i * 4 + 1] = 240u;   /* park offscreen */
+
+    if (!g_spr_cursor_hidden) {                            /* sprite 0 = cursor */
+        oam[0] = (uint8_t)g_spr_cx;
+        oam[1] = (uint8_t)g_spr_cy;
+        oam[2] = (uint8_t)(HX_SPR_TILE_CURSOR & 0xFFu);
+        oam[3] = (uint8_t)((3u << 4) | (0u << 1) | ((HX_SPR_TILE_CURSOR >> 8) & 1u));
+    }
+    /* FFT bars, sprites 1..32. Within a band the CAP takes the lowest index so
+     * it draws in front of the fill rows it overlaps — again, index is what
+     * decides sprite-vs-sprite layering, not the priority bits. */
+    for (int b = 0; b < HX_FFT_BANDS; ++b) {
+        uint8_t  bx   = (uint8_t)(HX_FFT_BASE_X + (unsigned)b * 8u);
+        unsigned base = HX_FFT_SPR0 + (unsigned)b * 4u;
+
+        unsigned cs = base;                                /* peak cap */
+        oam[cs * 4 + 0] = bx;
+        oam[cs * 4 + 1] = (uint8_t)(HX_FFT_CAP_Y - g_fft_peak[b] - 2u);
+        oam[cs * 4 + 2] = (uint8_t)(HX_SPR_TILE_CAP & 0xFFu);
+        oam[cs * 4 + 3] = (uint8_t)((3u << 4) | (4u << 1)   /* prio 3, pal 4 white */
+                                  | ((HX_SPR_TILE_CAP >> 8) & 1u));
+
+        for (int r = 0; r < HX_FFT_ROWS; ++r) {            /* fill rows, bottom-up */
+            int fill = (int)g_fft_h[b] - r * 8;
+            if (fill < 0) fill = 0;
+            if (fill > 8) fill = 8;
+            unsigned s    = base + 1u + (unsigned)r;
+            uint16_t tile = (uint16_t)(HX_SPR_FFT_TILE0 + fill);
+            oam[s * 4 + 0] = bx;
+            oam[s * 4 + 1] = (fill > 0) ? (uint8_t)(HX_FFT_BOT_Y - (unsigned)r * 8u)
+                                        : 240u;            /* empty row: hide */
+            oam[s * 4 + 2] = (uint8_t)(tile & 0xFFu);
+            oam[s * 4 + 3] = (uint8_t)((2u << 4)            /* pal 5/6/7 = G/Y/R */
+                                     | ((5u + (unsigned)r) << 1)
+                                     | ((tile >> 8) & 1u));
+        }
+    }
+
+    for (unsigned i = HX_SPR_POOL_FIRST; i <= HX_SPR_POOL_LAST; ++i) {
+        if (!g_spr_hole[i].active) continue;               /* 33..48 = holes */
+        oam[i * 4 + 0] = g_spr_hole[i].x;
+        oam[i * 4 + 1] = g_spr_hole[i].y;
+        oam[i * 4 + 2] = (uint8_t)(HX_SPR_TILE_HOLE & 0xFFu);
+        oam[i * 4 + 3] = (uint8_t)((2u << 4)                      /* prio 2 */
+                                 | ((g_spr_hole[i].pal & 7u) << 1)
+                                 | ((HX_SPR_TILE_HOLE >> 8) & 1u));
+    }
+}
+
+/* Sample the live band meter (it runs over the final mixed output, so it tracks
+ * the movie's own audio), fold 16 host bands to 8 by max-of-pairs, and smooth:
+ * instant attack, 1/4 decay for a natural meter fall. Then derive bar heights
+ * and advance the peak holds (1 px per frame). */
+static void hx_fft_tick(void) {
+    uint32_t raw[16];
+    uint32_t n = hxa_fft_bands(g_svc, raw, 16);
+    for (int i = 0; i < HX_FFT_BANDS; ++i) {
+        uint32_t a = ((uint32_t)(2 * i)     < n) ? raw[2 * i]     : 0u;
+        uint32_t c = ((uint32_t)(2 * i + 1) < n) ? raw[2 * i + 1] : 0u;
+        uint32_t v = (a > c) ? a : c;
+        if (v > 255u) v = 255u;
+        if (v >= g_fft_lvl[i]) g_fft_lvl[i] = (uint8_t)v;                        /* attack */
+        else g_fft_lvl[i] = (uint8_t)(g_fft_lvl[i] - ((g_fft_lvl[i] - v) >> 2)); /* decay  */
+
+        int hv = (int)g_fft_lvl[i] - HX_FFT_FLOOR;
+        if (hv < 0) hv = 0;
+        int h = (hv * (int)g_fft_gain[i]) >> 8;
+        if (h > HX_FFT_MAXH) h = HX_FFT_MAXH;
+        g_fft_h[i] = (uint8_t)h;
+
+        if (h >= (int)g_fft_peak[i]) g_fft_peak[i] = (uint8_t)h;   /* jump to peak */
+        else if (g_fft_peak[i] > 0)  g_fft_peak[i]--;              /* fall 1 px/f  */
+    }
+}
+
+/* Once per SNES frame: drain the port-2 mouse mailbox into the cursor, clamp
+ * to screen, rebuild OAM. The embedder (hx421_chip.cpp) clocks the Mouse's
+ * 32-bit report and calls hx421_post_mouse, which ACCUMULATES deltas; this is
+ * the ONLY consumer — a second one would steal motion, since draining resets. */
+static void hx_spr_tick(void) {
+    hx_fft_tick();
+    int dx = g_mouse_dx, dy = g_mouse_dy;
+    g_mouse_dx = 0; g_mouse_dy = 0;                        /* drain */
+
+    g_spr_cx += dx;
+    g_spr_cy += dy;
+    if (g_spr_cx < g_spr_clamp_l) g_spr_cx = g_spr_clamp_l;
+    if (g_spr_cx > g_spr_clamp_r) g_spr_cx = g_spr_clamp_r;
+    if (g_spr_cy < g_spr_clamp_t) g_spr_cy = g_spr_clamp_t;
+    if (g_spr_cy > g_spr_clamp_b) g_spr_cy = g_spr_clamp_b;
+
+    unsigned left  = g_mouse_btn & 1u;
+    unsigned right = (g_mouse_btn >> 1) & 1u;
+
+    if (right) {                                  /* clear the pool while held */
+        for (unsigned i = HX_SPR_POOL_FIRST; i <= HX_SPR_POOL_LAST; ++i)
+            g_spr_hole[i].active = 0u;
+        g_spr_next_hole = HX_SPR_POOL_FIRST;
+    }
+    g_spr_cursor_hidden = (int)right;             /* and hide the crosshair    */
+
+    if (left && !g_spr_prev_left) {               /* PRESS EDGE -> shoot       */
+        g_spr_rng = g_spr_rng * 1664525u + 1013904223u;
+        unsigned h = g_spr_next_hole;
+        g_spr_hole[h].x      = (uint8_t)g_spr_cx;
+        g_spr_hole[h].y      = (uint8_t)g_spr_cy;
+        g_spr_hole[h].pal    = (uint8_t)(1u + ((g_spr_rng >> 28) % 3u));  /* pal 1..3 */
+        g_spr_hole[h].active = 1u;
+        g_spr_next_hole = (h >= HX_SPR_POOL_LAST) ? HX_SPR_POOL_FIRST : (h + 1u);
+
+        /* Gunshot on its own voice, panned by where on screen the shot landed,
+         * so rapid clicks layer over each other and over the FMV audio. */
+        if (g_spr_bullet) {
+            int32_t pan = ((int32_t)g_spr_cx - 124) * 280;   /* 8..240 -> ~+-32k */
+            if (pan >  32767) pan =  32767;
+            if (pan < -32767) pan = -32767;
+            (void)hxa_trigger_sfx(g_svc, g_spr_bullet, 0x6000, pan);
+        }
+    }
+    g_spr_prev_left = left;
+
+    hx_spr_write_oam();
 }
 
 /* encode one 8x8 4bpp tile at content origin (x0,y0); `phase` scrolls the
@@ -524,8 +853,12 @@ static void hx_emit_fmv_band(uint32_t base, int band, uint16_t back_chr, uint16_
         e_bg_setup(c, &p);                             /* BGMODE, TM on main */
         e_lda_sta8(c, &p, front_sc,  0x2107u);         /* keep FRONT tilemap shown */
         e_lda_sta8(c, &p, front_nba, 0x210Bu);         /* keep FRONT CHR shown */
-        e_dma_vram_slot(c, &p, (uint16_t)(base + FMV_OFF_TILEMAP), 2048u, back_tm);
     }
+    /* Tilemap in 4 chunks of 512 B (256 words), one per band, into the BACK
+     * map — safe to fill incrementally because nothing displays it until the
+     * band-3 flip, and it keeps 2 KB off band 0. */
+    e_dma_vram_slot(c, &p, (uint16_t)(base + FMV_OFF_TILEMAP), 512u,
+                    (uint16_t)(back_tm + band * 256));
     /* every band: its CHR chunk -> BACK CHR base + (start_tile * 16 words) */
     int start_tile = 0;
     for (int i = 0; i < band; ++i) start_tile += fmv_band_tiles[i];
@@ -538,6 +871,20 @@ static void hx_emit_fmv_band(uint32_t base, int band, uint16_t back_chr, uint16_
         e_lda_sta8(c, &p, back_sc,  0x2107u);          /* FLIP tilemap -> back */
         e_lda_sta8(c, &p, back_nba, 0x210Bu);          /* FLIP CHR -> back */
     }
+
+    /* --- sprite overlay ------------------------------------------------- *
+     * Static OBJ assets ride band 1 (an EARLY band, so a long burst can't
+     * starve them) as ONE contiguous CHR slot plus both palette blocks. */
+    if (band == 1) {
+        e_dma_vram_slot(c, &p, HX_OFF_SPR_CHR, HX_SPR_CHR_BYTES, HX_SPR_VRAM_WORD);
+        e_dma_cgram_slot(c, &p, HX_OFF_SPR_CGRAM, HX_SPR_CGRAM_BYTES, HX_SPR_CGADD);
+        e_dma_cgram_slot(c, &p, HX_OFF_SPR_PAL47, HX_SPR_CGRAM_BYTES, HX_SPR_FFT_CGADD);
+    }
+    /* OAM: sprites 0-63 every band (60 Hz cursor + bars, 4x the video rate);
+     * the full 544 B once per video frame keeps 64-127 parked offscreen. */
+    e_dma_oam_slot(c, &p, HX_OFF_SPR_OAM,
+                   (band == 3) ? HX_SPR_OAM_BYTES : HX_SPR_OAM_ACTIVE, 0u);
+
     e8(c, &p, 0x6B);                                   /* rtl */
 }
 
@@ -725,8 +1072,65 @@ HX421_API int hx421_init(const Hx421Config *cfg) {
     g_fmv_mode    = (getenv("HX421_FMV") != NULL);   /* FMV band pipeline */
     if (g_fmv_mode) {
         g_fmv_need_decode = 1;                        /* decode frame 0 on the first band 0 */
+        /* A/B the staging depths without a rebuild. These ARE output latency —
+         * raising them buys underrun cushion but puts audio behind the picture
+         * (uncapped, the channel runs to 743 ms, which was the original lag).
+         * Prefer HX421_FMV_LEAD for cushion: the ring costs no lag. */
+        { const char *sb = getenv("HX421_FMV_STREAMBUF");
+          const char *cf = getenv("HX421_FMV_CHANFILL");
+          size_t sbv = sb && sb[0] ? (size_t)strtoul(sb, NULL, 10) : 0;
+          size_t cfv = cf && cf[0] ? (size_t)strtoul(cf, NULL, 10) : 0;
+          if (sbv || cfv) {
+              hxa_set_lowlat(g_svc, sbv, cfv);
+              fprintf(stderr, "hx421 fmv: staging streambuf=%u chanfill=%u frames\n",
+                      (unsigned)(sbv ? sbv : 2048u), (unsigned)(cfv ? cfv : 2048u));
+          } }
+        /* Gunshot SFX for the left click. HX421_BULLET_WAV overrides; otherwise
+         * "bullet.wav" beside the .fmv. Missing file just leaves clicks silent
+         * (holes still stamp) — a demo asset must never fail the run. */
+        g_spr_bullet = 0;
+        {
+            char bpath[1024];
+            const char *bw = getenv("HX421_BULLET_WAV");
+            if (bw && bw[0]) {
+                snprintf(bpath, sizeof bpath, "%s", bw);
+            } else {
+                const char *fp = getenv("HX421_FMV_FILE");
+                size_t cut = 0;
+                if (fp) for (size_t i = 0; fp[i]; ++i)
+                    if (fp[i] == '/' || fp[i] == '\\') cut = i + 1;
+                snprintf(bpath, sizeof bpath, "%.*sbullet.wav", (int)cut, fp ? fp : "");
+            }
+            g_spr_bullet = hxa_load_sfx_wav(g_svc, bpath);
+            fprintf(stderr, "hx421 spr: bullet SFX %s (\"%s\")\n",
+                    g_spr_bullet ? "loaded" : "MISSING - clicks silent", bpath);
+        }
+        memset(g_spr_hole, 0, sizeof g_spr_hole);
+        g_spr_next_hole = HX_SPR_POOL_FIRST;
+        g_spr_prev_left = 0; g_spr_cursor_hidden = 0;
+        memset(g_fft_lvl, 0, sizeof g_fft_lvl);
+        memset(g_fft_h,   0, sizeof g_fft_h);
+        memset(g_fft_peak, 0, sizeof g_fft_peak);
+        hxa_fft_set_enabled(g_svc, true);             /* band meter for the bars */
+        hx_spr_build_assets();                        /* static OBJ tiles + palettes */
+        /* Quick eyeball tuning without a rebuild: HX421_CURSOR_CLAMP=l,r,t,b */
+        { const char *cl = getenv("HX421_CURSOR_CLAMP");
+          int l, r, t, b;
+          if (cl && sscanf(cl, "%d,%d,%d,%d", &l, &r, &t, &b) == 4) {
+              hx421_cursor_set_clamp(l, r, t, b);
+              fprintf(stderr, "hx421 spr: cursor clamp = %d..%d x %d..%d\n", l, r, t, b);
+          } }
+        g_spr_cx = 124; g_spr_cy = 100;
+        hx_spr_write_oam();                           /* cursor centred, rest parked */
         hx421_audio_lock_init();                      /* worker feeds the mixer on both paths */
-        g_fmv_synctest = (getenv("HX421_FMV_SYNCTEST") != NULL);  /* flash+click A/V probe */
+        /* A/V probe: OFF unless explicitly =1. Value-checked (not mere presence)
+         * so HX421_FMV_SYNCTEST=0 actually disables it in a shell that already
+         * exported it. Kept as a permanent diagnostic — it flashes one frame
+         * white and puts a click in that SAME frame's audio, which measures
+         * true end-to-end A/V offset by eye and ear. */
+        { const char *st = getenv("HX421_FMV_SYNCTEST");
+          g_fmv_synctest = (st && st[0] == '1'); }
+        if (g_fmv_synctest) fprintf(stderr, "hx421 fmv: SYNCTEST on (flash+click probe)\n");
         /* Two INDEPENDENT knobs:
          *   HX421_FMV_PREROLL — video hold in SNES frames (16.7 ms each). This is
          *     the only thing that moves A/V sync: offset = L_out - hold, because
@@ -847,6 +1251,7 @@ HX421_API uint8_t hx421_cart_read(uint32_t addr) {
         g_back ^= 1;                                   /* write the other buffer next */
         if (g_fmv_mode) {
             g_fmv_av_started = 1;                      /* console live: audio may flow now */
+            hx_spr_tick();                             /* cursor at 60 Hz, before staging */
             g_fmv_band = (g_fmv_band + 1) & 3;         /* advance subframe band */
             if (g_fmv_band == 0) {                     /* completed a video frame */
                 g_fmv_front ^= 1;                      /* band 3 flipped display to back */
@@ -932,8 +1337,9 @@ static void hx_produce_fmv_band(void) {
     for (int i = 0; i < band; ++i) start_tile += fmv_band_tiles[i];
     uint32_t chr_bytes = (uint32_t)fmv_band_tiles[band] * 32u;
     memcpy(&g_window[base + FMV_OFF_CHR], &fmv_chr[start_tile * 32], chr_bytes);
-    if (band == 0)
-        memcpy(&g_window[base + FMV_OFF_TILEMAP], fmv_tilemap, sizeof fmv_tilemap);
+    /* this band's 512-byte quarter of the tilemap (decoded at band 0, so all
+     * four quarters come from the same frame) */
+    memcpy(&g_window[base + FMV_OFF_TILEMAP], &fmv_tilemap[band * 512], 512);
     if (band == 3)
         memcpy(&g_window[base + FMV_OFF_CGRAM], fmv_cgram, sizeof fmv_cgram);
 
@@ -1395,6 +1801,30 @@ HX421_API void hx421_post_joypads(const uint16_t pads[HX421_MAX_PADS]) {
 }
 HX421_API void hx421_post_mouse(int dx, int dy, unsigned buttons) {
     g_mouse_dx += dx; g_mouse_dy += dy; g_mouse_btn = buttons;
+}
+
+HX421_API void hx421_cursor_set_clamp(int left, int right, int top, int bottom) {
+    if (right < left) { int t = left; left = right; right = t; }
+    if (bottom < top) { int t = top;  top = bottom; bottom = t; }
+    g_spr_clamp_l = left;  g_spr_clamp_r = right;
+    g_spr_clamp_t = top;   g_spr_clamp_b = bottom;
+    /* re-clamp immediately so a shrink can't leave the cursor outside */
+    if (g_spr_cx < left)   g_spr_cx = left;
+    if (g_spr_cx > right)  g_spr_cx = right;
+    if (g_spr_cy < top)    g_spr_cy = top;
+    if (g_spr_cy > bottom) g_spr_cy = bottom;
+}
+
+HX421_API void hx421_cursor_get_clamp(int *left, int *right, int *top, int *bottom) {
+    if (left)   *left   = g_spr_clamp_l;
+    if (right)  *right  = g_spr_clamp_r;
+    if (top)    *top    = g_spr_clamp_t;
+    if (bottom) *bottom = g_spr_clamp_b;
+}
+
+HX421_API void hx421_cursor_get_pos(int *x, int *y) {
+    if (x) *x = g_spr_cx;
+    if (y) *y = g_spr_cy;
 }
 
 /* ============================ reset ==================================== */
