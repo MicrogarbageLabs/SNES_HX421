@@ -1,0 +1,33 @@
+# Quartus settings template for standalone soft-core benchmarking.
+# Copy to <core>/<core>.qsf, set TOP_LEVEL_ENTITY, and add the core's sources.
+#
+# Device matches the real board: EP4CE15F17C8N (Cyclone IV E, speed grade 8).
+# Speed grade matters — published core Fmax figures are usually for faster parts.
+
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE15F17C8
+set_global_assignment -name TOP_LEVEL_ENTITY bench_top
+
+# Optimize for speed: we are measuring the Fmax ceiling, not a production build.
+set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED
+set_global_assignment -name OPTIMIZATION_MODE "HIGH PERFORMANCE EFFORT"
+
+# Put RV32M's multiplier on the 56 idle 18x18 DSP blocks rather than in LEs.
+set_global_assignment -name DSP_BLOCK_BALANCING "DSP BLOCKS"
+
+# Infer memories into M9K rather than LE-based registers — otherwise a core's
+# register file or cache tags silently consume thousands of LEs and the area
+# number is meaningless.
+set_global_assignment -name AUTO_RAM_RECOGNITION ON
+set_global_assignment -name AUTO_ROM_RECOGNITION ON
+
+# Unused pins as inputs tri-stated: this is a synthesis experiment, not a board.
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED"
+
+set_global_assignment -name SDC_FILE bench.sdc
+
+# --- core sources: add per candidate -----------------------------------------
+# set_global_assignment -name VERILOG_FILE       ../../../third_party/<core>/....v
+# set_global_assignment -name SYSTEMVERILOG_FILE ../../../third_party/<core>/....sv
+# set_global_assignment -name VHDL_FILE          ../../../third_party/<core>/....vhd
+set_global_assignment -name VERILOG_FILE bench_top.v
