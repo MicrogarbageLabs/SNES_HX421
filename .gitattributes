@@ -1,0 +1,28 @@
+# Line-ending policy: store text as LF in the repository, check out native.
+# Makes the normalization explicit rather than relying on each clone's
+# core.autocrlf setting, so a Linux/CI checkout and a Windows one agree.
+* text=auto
+
+# Must stay LF regardless of platform — these are read by tools that treat a
+# trailing CR as part of the token. make in particular will fail obscurely on
+# CRLF recipes, and MSYS2/bash scripts break outright.
+*.sh        text eol=lf
+*.mk        text eol=lf
+Makefile    text eol=lf
+*.cfg       text eol=lf
+
+# Windows-native tooling: CRLF on checkout is correct.
+*.ps1       text eol=crlf
+
+# Binary assets — never normalize, never diff as text.
+*.wav       binary
+*.fmv       binary
+*.sfc       binary
+*.smc       binary
+*.bin       binary
+*.rom       binary
+*.png       binary
+*.pdf       binary
+*.sof       binary
+*.pof       binary
+*.jic       binary
