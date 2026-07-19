@@ -1,0 +1,39 @@
+# Build artifacts
+*.im3
+*.bi3
+*.sfc
+*.bin
+*.map
+
+# Quartus
+db/
+incremental_db/
+output_files/
+*.qws
+*.rpt
+*.summary
+*.pin
+*.pof
+*.sof
+*.jdi
+*.qpf.bak
+
+# ARM / firmware build
+*.o
+*.elf
+*.hex
+*.lst
+build/
+obj/
+
+# Host build output / run logs
+*.exe
+*.dll
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+*~
+Thumbs.db
+desktop.ini
