@@ -35,21 +35,30 @@ actually faster (F401 SRAM is single-cycle; even ART-accelerated flash is not).
 
 ### FPGA BRAM (56 blocks / 63 KB)
 
+Revised after the baseline build measured the base at **1 block, not ~5** (see
+`docs/hardware-budget.md`), and after the audio decisions below changed.
+
 | region | blocks |
 |---|---|
 | vectors (permanent, hard-partitioned from payload) | 1 |
 | boot payload (WRAM loader) | 2 |
-| per-frame DMA staging, **single-buffered** (sized by FMV's ~7.4 KB burst) | 12 |
+| per-frame DMA staging, single-buffered (sized by the SNES's ~7.4 KB burst) | 12 |
 | SNES↔FPGA mailbox + doorbell | 1 |
 | mixer: 8 × PSRAM prefetch FIFOs @512 B | 4 |
-| mixer: pre-mixed PCM input FIFO (absorbs SPI jitter) | 4 |
+| mixer: **2 × SPI stream input FIFOs @4 KB** (was 1 pre-mixed) | 8 |
 | mixer: DAC output FIFO | 1 |
 | metatile cache + expansion buffers | 5 |
 | PSRAM read prefetch | 2 |
-| sd2snes base (**estimate — confirm at baseline build**) | ~5 |
+| sd2snes base (**measured**) | 1 |
 | **used / spare** | **~37 / ~19** |
 
 TBDR tile buffer later wants ~5 blocks, leaving ~14 spare.
+
+**Worth reconsidering: ping-pong staging.** Single-buffering was chosen when BRAM looked scarce. It
+costs 12 more blocks to double-buffer, which now fits. Single-buffer works because the SNES bursts
+during vblank while the FPGA fills during active display — naturally time-separated — but there is a
+race at the boundary that ping-pong removes outright. Decide when the staging path is written; the
+blocks are available either way.
 
 ### STM32 SRAM (64 KB, one bank)
 
@@ -58,12 +67,12 @@ TBDR tile buffer later wants ~5 blocks, leaving ~14 spare.
 | game code + rodata (SD-loaded, overlay-swappable) | 16-24 KB |
 | collision region window (64×64, 2 bits — **not** a resident whole-world map) | 1 KB |
 | SD stream buffers (2 × 4 KB) | 8 KB |
-| pre-mix output buffer → SPI | 4 KB |
+| ~~pre-mix output buffer~~ — **dropped, see audio below** | — |
 | actor + game state | 4-8 KB |
 | FatFs sector buffer + FS state | ~2 KB |
 | SPI DMA staging | ~2 KB |
 | stack + heap | 4-8 KB |
-| **used / spare** | **41-57 KB / 7-23 KB** |
+| **used / spare** | **37-53 KB / 11-27 KB** |
 
 A **region window** beats a resident collision map: 1 KB reloaded on scroll rather than 16 KB
 resident, and it scales to any world size instead of growing quadratically.
@@ -90,10 +99,30 @@ this way). Optionally a doorbell offset that triggers on write, so the FPGA need
 Costs on the PC side: a new ABI export `hx421_cart_write` plus forwarding in `hx421_chip.cpp`
 (currently a no-op) — an ABI bump and a bsnes-plus rebuild.
 
-**Pre-mix PCM on the STM32, send one stream.** Saves 350 KB/s of SPI, two-thirds of the input FIFO
-BRAM, and means the FPGA's drift resampler handles **one** stream instead of three. Per-stream
-volume/pan/ducking still work, applied during the pre-mix in C. Two stream handles is right: enough
-for a seamless intro→loop transition with both open across the boundary.
+**Audio: uniform 44.1 kHz, no pre-mixing.** Both earlier decisions here (22 kHz SFX, STM32 pre-mix)
+were made against the *pre-pivot* SPI budget, when the STM32 read samples over the link. Once the
+FPGA mixes from PSRAM directly, SFX never cross SPI and neither constraint exists.
+
+- **All voices 44.1 kHz**, SFX mono. Costs 2.5% of PSRAM instead of 1.2% — irrelevant. The win is
+  that with every voice at the output rate there is **no per-channel resampler at all**: the mixer is
+  gain, sum, saturate. Drift correction then happens **once on the mixed output** rather than eight
+  times. That is the difference between a mixer verifiable against the C reference in an afternoon
+  and one you chase rounding differences in for a week. Also: 22 kHz would have put our SFX *below*
+  the SPC700's own 32 kHz, which is the wrong side of the line for a coprocessor selling itself on
+  audio.
+- **The STM32 sends its two streams raw.** Pre-mixing spent 4 KB of the *scarce* resource (STM32
+  SRAM, which also holds game code) to save ~4 blocks of the *plentiful* one (BRAM). SPI goes from
+  ~12% to ~21% — fine. The STM32 then needs **no mixer code at all**: read SD, push to SPI, manage
+  stream lifecycle. Per-stream gain/pan/ducking become FPGA register writes.
+- The FPGA sees **one uniform voice abstraction** — 8 voices at 44.1, some fed from PSRAM (SFX), some
+  from SPI FIFOs (streams), all handled identically. One RTL path, not two.
+
+Two stream handles is right: enough for a seamless intro→loop transition with both open across the
+boundary.
+
+**Consequence for the C engine.** With mixing in fabric, the STM32 does not run `engine/`. Its role
+becomes the **PC-side reference model and the source of truth for the RTL mixer** — golden output to
+diff bit-exactly against in simulation. That is a better use for it than a second implementation.
 
 **Metatile queries are pipelined, never synchronous.** Issue frame N's query list at the end of N's
 logic; consume the response at the start of N+1. ~93 µs of work against 16.7 ms of availability
@@ -112,13 +141,37 @@ Required discipline, or it silently breaks:
 
 | traffic | rate |
 |---|---|
-| pre-mixed PCM to FPGA | 176 KB/s |
+| **2 raw PCM streams** to FPGA (was 1 pre-mixed) | 352 KB/s |
 | metatile query req+resp (50 tiles, batched) | ~13 KB/s |
 | commands, joypad mailbox, status | ~30 KB/s |
-| **total** | **~220 KB/s (~12%)** |
+| **total** | **~395 KB/s (~21%)** |
 
 FMV bulk still uses `fpga_sddma` (SD → PSRAM direct), and SFX are mixed in the FPGA from PSRAM, so
 neither crosses the link. The pivot leaves the SPI link mostly idle.
+
+## Decision audit after measurement (2026-07-19)
+
+Several choices here were made against constraints that the baseline build and the pivot itself then
+dissolved. Re-examined every one:
+
+| decision | original driver | verdict |
+|---|---|---|
+| drop soft RISC-V for game logic | BRAM scarcity | **stands, reasoning corrected** — base is 1 block not ~5, so ~26 would have been free. Holds on M4F speed, SWD debugging, toolchain, HX-420 portability instead |
+| 22 kHz SFX | pre-pivot SPI budget (SFX crossed the link) | **REVERSED → 44.1 kHz** — FPGA reads PSRAM directly; also removes all per-channel resamplers |
+| STM32 pre-mixes 2 streams → 1 | SPI bandwidth, FPGA FIFO BRAM, resampler count | **REVERSED** — spent scarce SRAM to save plentiful BRAM; uniform 44.1 removed the resampler argument entirely |
+| single-buffered staging | BRAM scarcity | **open** — ping-pong now affordable (12 blocks); decide when the staging path is written |
+| collision = 1 KB region window | STM32 SRAM scarcity | **stands** — SRAM is still the tight resource, and it scales to any world size |
+| game code in SRAM, not flash | firmware genericity, flash wear | **stands** — owner's call, unaffected by measurement |
+| writable 256 B mailbox | read-only bus was our choice | **stands** |
+| pipelined metatile queries | SPI round-trip latency | **stands, more margin** |
+| metatile edge-seam rendering | DMA budget | **stands** — still the biggest rendering win |
+| no microheads | PSRAM fetch ≪ deadline | **stands, more strongly** — the FPGA now reads PSRAM at ~70 ns directly rather than over SPI |
+| primed heads ~200 ms in PSRAM | worst-case SD arbiter wait | **stands** — sized by SD, which did not change |
+
+**Pattern worth noting:** three decisions in one session were invalidated not by being wrong when
+made, but by the architecture moving underneath them. Any future "we chose X because Y is tight"
+should be re-checked against measured numbers before it drives RTL — assumptions here have run 5x
+off in both directions.
 
 ## Next steps
 
