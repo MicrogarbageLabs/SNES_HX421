@@ -9,11 +9,19 @@ custom H745 board.
 as a starting point (tracked in `engine/PROVENANCE.md`); after that they are HX-421's own code. No
 submodule, no shared library, no build/runtime coupling.
 
-**Status:** scaffolding. Architecture is settled (see `docs/`); no HW code written yet.
+**Status:** the PC-side seam is live. A 65816 kernel plus the coprocessor DLL play 240x208 15 fps FMV
+with muxed, drift-corrected audio, over a sprite overlay (SNES Mouse cursor, bullet holes, gunshot
+SFX, spectrum bars) — the "film critic" demo. No FPGA/M3 code written yet; architecture for that side
+is settled (see `docs/`).
 
-**PC development is via `ares`** (more cycle-accurate than bsnes-plus — validates the timing-critical
-release/NMI-DMA handshake), with the coprocessor logic as a stable-ABI DLL behind a **cartridge-seam
-contract** implemented by both ares and the FPGA. See `docs/emulation-seam.md`.
+**PC development is via `bsnes-plus`**, with the coprocessor logic as a stable-ABI DLL (`hx421.dll`)
+behind a **cartridge-seam contract** implemented by both the emulator and, eventually, the FPGA. The
+emulator loads the DLL, serves its 64 KB window on the cart bus, and forwards joypads plus the port-2
+SNES Mouse; everything else is ours. See `docs/emulation-seam.md` and `host/README.md`.
+
+`ares` remains the intended **accuracy cross-check** — it charges DRAM-refresh stalls that bsnes-plus
+does not, so it is the harsher test of the timing-critical DMA budget before anything goes near real
+silicon. See `host/ares-integration.md`.
 
 ## The one-paragraph idea
 
@@ -39,13 +47,20 @@ include/
   hx421.h        THE cartridge-seam contract (flat-C dual-target ABI; host ↔ runtime)
 docs/            architecture, audio, memory budget, build, pc-build, emulation seam
 engine/          portable core — mixer, sound RAM, arbiter, FFT, drift correction
-                 (HX-421's own code; built into BOTH firmware and the ares DLL)
+                 (HX-421's own code; built into BOTH firmware and the bsnes-plus DLL)
   service.{h,c}  runtime owner (hxa_* API): pool+mixer+arbiter+players+fft as one unit
   demo/player.c  end-to-end render demo → out.wav
 runtime/
   hx421_runtime.c  implements include/hx421.h over hxa_* → hx421.dll (or M3 static)
+                   FMV pipeline, 65816 DMA-body emitter, sprite overlay
+  hx421_wasapi.c   Windows audio sink (device-native rate + internal resample)
+snes/            65816 kernel (ca65): free-running H-IRQ, per-line action table
+                 indexed by live V, dynamic force-blank letterbox; runs from WRAM
 tools/
   hx421_host_test.c  LoadLibrary harness proving the ABI (build: engine `make dll dlltest`)
+  hx421_fmv_test.c   headless FMV band/slot smoke test
+  hx421_fmv_bars.c   .fmv letterbox analyzer (measures a clip's own black bars)
+  run-hx421.ps1      launch bsnes-plus with the DLL + an .fmv
 fpga/
   base/          forked sd2snes_mini (bus decode + MCU/SPI bridge + PLL)  [vendor]
   cores/
@@ -53,7 +68,9 @@ fpga/
     (riscv/, compositor/ — see fpga/README.md; add when needed)
 firmware/        M3-specific: SD/FAT, USB, HAL, main — links engine/
   audio/         audio-processor design notes
-host/            ares fork: coprocessor board + DLL shim (the PC seam)   [plan: host/README.md]
+host/            the PC seam
+  bsnes-plus/    coprocessor chip + DLL shim (hx421_chip.cpp) — the live path
+  ares-integration.md  plan for the ares accuracy cross-check
 tools/build/     docker build + deploy notes
 ```
 
@@ -61,7 +78,9 @@ tools/build/     docker build + deploy notes
 microgarbage. The **only** external code lineage is: the sd2snes base (its own license) and whatever
 `engine/PROVENANCE.md` records.
 
-## First moves (before writing code)
+## First moves on the hardware track
+
+(The PC seam above is already running; this is the FPGA/M3 side, which has not started.)
 
 1. `git submodule`/vendor `sd2snes_mini`, build the **unmodified** baseline via the docker to prove
    the toolchain end-to-end (see `fpga/base/VENDOR.md`).
