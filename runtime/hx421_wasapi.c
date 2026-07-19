@@ -113,7 +113,20 @@ static void *wasapi_open(uint32_t sample_rate) {
     wf.cbSize          = 0;
     c->channels = wf.nChannels;
 
-    REFERENCE_TIME buffer_duration = (REFERENCE_TIME)40 * 10000;    /* 40 ms (was 100) */
+    /* Device buffer depth. Too small and the render worker can't refill before
+     * the engine drains it under load -> clicks. mgapi used 100 ms; bsnes runs
+     * ~70; 40 proved marginal here. NOTE this is OUTPUT latency only, a fixed
+     * offset the video preroll absorbs — it does not affect A/V drift.
+     * Tune with HX421_WASAPI_MS (clamped 20..200).
+     * If pops persist with a deep buffer, check `underruns` in the `av:` line:
+     * that counts the FMV audio RING starving, a different fault entirely. */
+    unsigned buf_ms = 70u;
+    { const char *e = getenv("HX421_WASAPI_MS");
+      if (e && e[0]) { long v = strtol(e, NULL, 10);
+                       if (v < 20)  v = 20;
+                       if (v > 200) v = 200;
+                       buf_ms = (unsigned)v; } }
+    REFERENCE_TIME buffer_duration = (REFERENCE_TIME)buf_ms * 10000;
     hr = IAudioClient_Initialize(c->client, AUDCLNT_SHAREMODE_SHARED,
                                  AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
@@ -128,9 +141,9 @@ static void *wasapi_open(uint32_t sample_rate) {
 
     hr = IAudioClient_GetBufferSize(c->client, &c->buffer_frames);
     if (FAILED(hr)) goto fail;
-    fprintf(stderr, "hx421 wasapi: device buffer = %u frames (%u ms @ %u Hz)\n",
+    fprintf(stderr, "hx421 wasapi: device buffer = %u frames (%u ms @ %u Hz; requested %u ms)\n",
             (unsigned)c->buffer_frames, (unsigned)(c->buffer_frames * 1000u / sample_rate),
-            (unsigned)sample_rate);
+            (unsigned)sample_rate, buf_ms);
     fflush(stderr);
 
     hr = IAudioClient_GetService(c->client, &IID_IAudioRenderClient, (void **)&c->render);

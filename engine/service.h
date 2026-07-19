@@ -116,6 +116,15 @@ size_t hxa_feed_pcm(HxaService *s, const int16_t *stereo, size_t frames);
 void hxa_ring_stats(HxaService *s, uint32_t *underruns, uint32_t *overflows,
                     uint32_t *fill_frames);
 
+/* Staging depths for a ring-fed (FMV) voice, in frames. These ARE output
+ * latency: the player's streaming buffer plus the mixer-channel prefill sit
+ * ahead of the playhead, so deep values put audio behind a near-instant video
+ * path (left uncapped the channel runs to its full 743 ms). Defaults 2048 each
+ * (~46 ms @44.1k). Raising them buys underrun cushion at the cost of A/V lag;
+ * prefer deepening the upstream ring instead, which costs no lag. Takes effect
+ * on the next voice opened. Clamped to the slot's buffer size. */
+void hxa_set_lowlat(HxaService *s, size_t stream_frames, size_t channel_fill);
+
 /* ---- render (the audio-pull entry point) ---- */
 
 /* Pump active stream sources into their mixer channels, reap finished

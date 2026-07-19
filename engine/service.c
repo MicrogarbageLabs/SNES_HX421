@@ -86,6 +86,10 @@ struct HxaService {
 
     /* Single-context handoff to svc_sink_start (mirrors the reference's
      * pend_* pattern). Valid only across one arbiter_play* call. */
+    /* Ring-fed (FMV) staging depths in frames — see hxa_set_lowlat(). */
+    size_t          ll_stream;
+    size_t          ll_chanfill;
+
     HxaMusicSource  pend_source;
     const char     *pend_path;         /* HXA_SRC_FILE */
     uint32_t        pend_rate;         /* HXA_SRC_RING */
@@ -142,9 +146,8 @@ static bool start_music(HxaService *s, HxaMusicSlot *ms, uint32_t track,
          * tiny AND the mixer-channel prefill must be capped — left uncapped it
          * runs to the channel's full 743 ms and puts audio ~0.8 s behind the
          * picture. Music voices keep the deep buffers (latency is free there). */
-        .streaming_buffer_samples = low_latency ? HXA_FMV_STREAM_FRAMES
-                                                : HXA_MUSIC_STREAM_FRAMES,
-        .max_channel_fill_samples = low_latency ? HXA_FMV_CHANNEL_FILL : 0,
+        .streaming_buffer_samples = low_latency ? s->ll_stream : HXA_MUSIC_STREAM_FRAMES,
+        .max_channel_fill_samples = low_latency ? s->ll_chanfill : 0,
         .intro_head_buffer        = ms->intro_head,
         .intro_head_samples       = HXA_MUSIC_HEAD_FRAMES,
         .loop_head_buffer         = ms->loop_head,
@@ -317,6 +320,9 @@ HxaService *hxa_create(const HxaConfig *cfg) {
                                       c.headroom_bits, &sync, NULL, NULL);
     free(chans);
     if (!s->mixer) goto fail_pool;
+
+    s->ll_stream   = HXA_FMV_STREAM_FRAMES;      /* ring-fed voice defaults */
+    s->ll_chanfill = HXA_FMV_CHANNEL_FILL;
 
     AudioArbiterSink sink = { svc_sink_start, svc_sink_stop, s, svc_sink_is_done };
     if (!audio_arbiter_init(&s->arbiter, tracks, &s->pool, &sink))
@@ -492,6 +498,15 @@ AudioVoiceHandle hxa_open_pcm_stream(HxaService *s, uint32_t rate,
 size_t hxa_feed_pcm(HxaService *s, const int16_t *stereo, size_t frames) {
     if (!s || !stereo) return 0;
     return audio_ring_stream_push(&s->ring, stereo, frames);
+}
+
+void hxa_set_lowlat(HxaService *s, size_t stream_frames, size_t channel_fill) {
+    if (!s) return;
+    if (stream_frames == 0)                     stream_frames = HXA_FMV_STREAM_FRAMES;
+    if (stream_frames > HXA_MUSIC_STREAM_FRAMES) stream_frames = HXA_MUSIC_STREAM_FRAMES;
+    if (channel_fill == 0)                      channel_fill = HXA_FMV_CHANNEL_FILL;
+    s->ll_stream   = stream_frames;
+    s->ll_chanfill = channel_fill;
 }
 
 void hxa_ring_stats(HxaService *s, uint32_t *underruns, uint32_t *overflows,
