@@ -6,6 +6,14 @@ here and free to diverge. Do not try to keep it in sync with microgarbage.
 
 Source revision: `258ad24` (microgarbage `git rev-parse --short HEAD`, copied 2026-07-15)
 
+## Tools (2026-07-20)
+
+| Target | Origin | Mark | Notes |
+|---|---|---|---|
+| `tools/hx421_fmv_encode.c` | `microgarbage/tools/fmv_encode.c` | **verbatim** | Same owner, CC0. Carried over unchanged because HX-421's player already consumes exactly this format — 240x208, 780 tiles, FMV2 with BLOCK 26776. `movie.fmv`, which the film-critic demo plays, came out of this encoder. Only the header comment differs. |
+| `tools/encode-fmv.ps1` | `microgarbage/tools/encode_fmv.ps1` | adapted | Retargeted at HX-421 paths, **defaults to 15 fps** (the proven 4-sub-frame path) rather than 20 (needs the shelved siphon), and gained `-PackDir`/`-Pack` to chain into the container packer. |
+| `tools/hx421_fmvpack.c` | **new** | — | No microgarbage equivalent; the multi-clip seekable container is an HX-421 addition. |
+
 ## Copy manifest (extraction audit, 2026-07-15)
 
 Ordered so each file's deps precede it. Target path is under `engine/`.
