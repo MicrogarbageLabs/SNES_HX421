@@ -1402,7 +1402,11 @@ static void load_builtin_sfx(uint16_t slot, uint32_t asset) {
 
 HX421_API int hx421_init(const Hx421Config *cfg) {
     if (!cfg) return -22;                                   /* -EINVAL */
-    if (cfg->abi_version != HX421_ABI_VERSION) return -22;
+    /* MAJOR must match; MINOR may differ in either direction. Minor bumps are
+     * additive (new exports, new trailing config fields) and every addition is
+     * optional, so an older host works against a newer DLL and vice versa.
+     * Strict equality here would make every additive change a hard break. */
+    if ((cfg->abi_version >> 16) != HX421_ABI_VERSION_MAJOR) return -22;
     if (cfg->cart_window_size != HX421_CART_WINDOW_BYTES) return -22;
     if (cfg->pad_count > HX421_MAX_PADS) return -22;
     if (cfg->audio_sample_rate != 0 && cfg->audio_sample_rate < 8000) return -22;

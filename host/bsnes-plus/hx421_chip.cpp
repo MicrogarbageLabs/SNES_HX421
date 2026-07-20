@@ -97,15 +97,31 @@ bool Hx421::try_load() {
   p_audio_command = reinterpret_cast<decltype(p_audio_command)>(dll_sym(h, "hx421_audio_command"));
   cmd_enabled = (getenv("HX421_CMD") != nullptr);
 
-  // ABI handshake: the DLL's abi_version must match the header we built
-  // against. A mismatch means the struct layout below may be wrong.
-  uint32_t dll_abi = p_abi_version();
-  if(dll_abi != HX421_ABI_VERSION) {
+  // ABI handshake. Only the MAJOR must match: MINOR bumps are additive by
+  // definition (new functions, new trailing fields), and every added export is
+  // resolved optionally, so an older host runs happily against a newer DLL —
+  // it simply does not use what it has never heard of.
+  //
+  // Checking strict equality here defeats the whole point of having a
+  // major/minor split, and fails in a spectacularly confusing way: the chip
+  // refuses to load, bsnes falls back to normal mapping, and the SNES boots
+  // whatever trigger .sfc was passed as if it were an ordinary cart.
+  uint32_t dll_abi   = p_abi_version();
+  uint32_t dll_major = dll_abi >> 16, dll_minor = dll_abi & 0xFFFF;
+  if(dll_major != HX421_ABI_VERSION_MAJOR) {
     fprintf(stderr,
-            "hx421: ABI mismatch — header %08x, dll %08x. refusing to load.\n",
-            (unsigned)HX421_ABI_VERSION, (unsigned)dll_abi);
+            "hx421: ABI MAJOR mismatch — header %u.%u, dll %u.%u. refusing to load.\n",
+            (unsigned)HX421_ABI_VERSION_MAJOR, (unsigned)HX421_ABI_VERSION_MINOR,
+            (unsigned)dll_major, (unsigned)dll_minor);
     dll_close(h);
     return false;
+  }
+  if(dll_minor != HX421_ABI_VERSION_MINOR) {
+    fprintf(stderr,
+            "hx421: ABI minor differs — header %u.%u, dll %u.%u. continuing "
+            "(additive only; unknown exports stay unused).\n",
+            (unsigned)HX421_ABI_VERSION_MAJOR, (unsigned)HX421_ABI_VERSION_MINOR,
+            (unsigned)dll_major, (unsigned)dll_minor);
   }
 
   Hx421Config cfg = {};
