@@ -116,6 +116,37 @@ clears the FIFO of stale frames on a seek or stop — the FPGA/coprocessor side 
 it is handed. That split matches the architecture pivot: the STM32 runs logic and streaming, the
 fabric does fixed-function staging.
 
+## Scrub: rewind and fast-forward
+
+Fixed-size uncompressed units make any frame **one fseek away**, so scrubbing is just a different
+stride per read — `+1` normal, `+N` forward, `-N` rewind, wrapping both ways. The reader is already
+streaming, so **nothing rebuffers and no primed head is involved**. Heads narrow to what they are
+actually for: a cold start, and jumping to a *different* clip where no stream is running yet.
+
+Audio is **gated off whenever the stride is not 1** (reversed or 4x audio is noise) and the push
+ring is **flushed on return to normal** via `hxa_flush_pcm`. The flush is the load-bearing half:
+without it the ring's whole depth (~200 ms) of pre-scrub audio plays before the new position is
+heard, which reads as a lag on every release.
+
+If audio during a *slow* scrub is ever wanted (1.5x read-through), that is where pitch-corrected
+injection would earn its cost; the `rate` field is the hook.
+
+## THE DMA BURST SWALLOWS ~56 SCANLINES
+
+Measured via `HX421_MB_BURST_V`: the burst starts at VIS_END and does not finish until **V ~ 0-10
+of the NEXT frame**. The CPU is held off the bus throughout, so **any per-line IRQ work inside that
+window never dispatches**.
+
+This cost two debugging rounds. The joypad mailbox push was placed at line 230 — inside the burst —
+and was simply never reached, having also been branch-skipped in its first placement. Both versions
+assembled perfectly and were verifiably present in the ROM.
+
+**Rule: anything needing a per-line IRQ must live in the VISIBLE region.** `PAD_LINE` is 100.
+
+Corollary worth acting on: FMV runs `TOP_LB = 8`, so the display unblanks at line 8 while the burst
+is still running to ~10 — about **two lines of DMA during active display**. It is not visibly
+disturbing the picture, but it is real, and it is what the `overruns` counter exists to catch.
+
 ## Build order
 
 1. **Container + packer** (`tools/`) — asset pipeline first; everything downstream needs it.
