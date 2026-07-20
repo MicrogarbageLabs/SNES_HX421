@@ -35,10 +35,14 @@ int hx421_metatile_layer_valid(const Hx421MapLayer *layer) {
  * which access pattern it is walking, the lookup does not. */
 static Hx421TileEntry mt_lookup(const Hx421MapLayer *L, int tx, int ty,
                                 uint8_t shift, int prefer_cols) {
-    const int mtx = tx >> shift;                 /* metatile coords */
-    const int mty = ty >> shift;
-    if (mtx < 0 || mty < 0 || mtx >= (int)L->map_w || mty >= (int)L->map_h)
+    int mtx = tx >> shift;                       /* metatile coords */
+    int mty = ty >> shift;
+    if (L->wrap) {                               /* torus: wrap, never oob */
+        mtx = (int)(((mtx % (int)L->map_w) + (int)L->map_w) % (int)L->map_w);
+        mty = (int)(((mty % (int)L->map_h) + (int)L->map_h) % (int)L->map_h);
+    } else if (mtx < 0 || mty < 0 || mtx >= (int)L->map_w || mty >= (int)L->map_h) {
         return L->oob_entry;
+    }
 
     uint16_t mt = prefer_cols && L->map_cols
                 ? L->map_cols[(size_t)mtx * L->map_h + (size_t)mty]   /* transposed */

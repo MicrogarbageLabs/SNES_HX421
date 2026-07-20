@@ -52,8 +52,17 @@ typedef struct {
     uint16_t         def_count;
     uint8_t          mt_side;       /* tiles per side: 2, 4 or 8 */
 
-    /* Entry substituted when a coordinate falls outside the map. */
+    /* Entry substituted when a coordinate falls outside the map (wrap == 0). */
     Hx421TileEntry   oob_entry;
+
+    /* Non-zero: the map is a torus — coordinates wrap modulo map_w/map_h
+     * instead of yielding oob_entry. Lets a camera advance without bound and
+     * removes the discontinuity a modulo-wrapped camera would otherwise cause
+     * (which strands the tilemap stale until the seams repair it, one column
+     * per frame). For the wrap to be seamless on screen the map's tile
+     * dimensions must be a multiple of the SNES tilemap's (64 wide, 32 high),
+     * so that world tile T and T+map_tiles land in the same tilemap slot. */
+    uint8_t          wrap;
 } Hx421MapLayer;
 
 /* Validate a layer: non-NULL map_rows/defs, mt_side in {2,4,8}, non-zero

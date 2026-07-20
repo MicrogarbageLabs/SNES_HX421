@@ -135,7 +135,46 @@ int main(void) {
         map_rows[0] = 0;
     }
 
-    /* 5. bad configurations are rejected rather than crashing */
+    /* 5. torus mode: never yields oob, and is periodic in both axes */
+    {
+        const int side = 2;
+        build(side);
+        Hx421MapLayer W = {
+            .map_rows = map_rows, .map_cols = map_cols,
+            .map_w = MAP_W, .map_h = MAP_H,
+            .defs = defs, .def_count = DEFS,
+            .mt_side = (uint8_t)side, .oob_entry = OOB, .wrap = 1,
+        };
+        Hx421MapLayer W_norows = W; W_norows.map_cols = NULL;
+
+        printf("-- torus (wrap = 1) --\n");
+        const int period_x = MAP_W * side, period_y = MAP_H * side;
+
+        int any_oob = 0, aperiodic = 0, mismatch = 0;
+        for (int tx = -2 * period_x; tx < 2 * period_x; tx += 3) {
+            Hx421TileEntry a[16], b[16], shifted[16];
+            hx421_metatile_column(&W,        tx, -5, 16, a);
+            hx421_metatile_column(&W_norows, tx, -5, 16, b);
+            hx421_metatile_column(&W, tx + period_x, -5, 16, shifted);
+            if (memcmp(a, b, sizeof a) != 0)       mismatch++;
+            if (memcmp(a, shifted, sizeof a) != 0) aperiodic++;
+            for (int i = 0; i < 16; ++i) if (a[i] == OOB) any_oob++;
+        }
+        check(any_oob == 0,   "torus: negative and past-end coords never yield oob");
+        check(aperiodic == 0, "torus: column at tx == column at tx + period");
+        check(mismatch == 0,  "torus: transposed == strided");
+
+        int rows_aperiodic = 0;
+        for (int ty = -period_y; ty < period_y; ty += 3) {
+            Hx421TileEntry a[16], shifted[16];
+            hx421_metatile_row(&W, ty, -7, 16, a);
+            hx421_metatile_row(&W, ty + period_y, -7, 16, shifted);
+            if (memcmp(a, shifted, sizeof a) != 0) rows_aperiodic++;
+        }
+        check(rows_aperiodic == 0, "torus: row at ty == row at ty + period");
+    }
+
+    /* 6. bad configurations are rejected rather than crashing */
     {
         Hx421MapLayer bad = { .map_rows = map_rows, .map_w = MAP_W, .map_h = MAP_H,
                               .defs = defs, .def_count = DEFS, .mt_side = 3 };

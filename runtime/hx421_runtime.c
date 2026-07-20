@@ -201,14 +201,27 @@ static void e_dma_cgram_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size,
  * VRAM: tilemap at word 0x0000, CHR at word 0x2000. No double-buffering: the
  * column being written is the one entering from off-screen, so it is never
  * the one being displayed. */
-#define MAP_OFF_COL     0x0400u    /* 64 B: 32 tilemap entries (a column)  */
-#define MAP_OFF_ROW     0x0440u    /* 64 B: 32 tilemap entries (a row)     */
-#define MAP_OFF_FULL    0x0480u    /* 2048 B: initial full-tilemap fill    */
-#define MAP_OFF_CHR     0x0C80u    /* 512 B: 16 tiles, 4bpp                */
-#define MAP_OFF_CGRAM   0x0E80u    /* 32 B: 16 colours                     */
-#define MAP_TM_VWORD    0x0000u
+/* TILEMAP IS 64x32, NOT 32x32. The viewport is 256 px = 32 tiles, but at any
+ * scroll offset that is not a multiple of 8 a partial tile shows at BOTH edges
+ * — 33 distinct columns. In a 32-wide map, column (T+32)&31 IS column T&31, so
+ * the column entering at the right and the one still visible at the left are
+ * the same tilemap slot: writing the new one corrupts the old one on screen.
+ * 64 wide gives 512 px of wrap, so the entering column is written far from
+ * anything visible. Vertically 32 rows is fine (224 px = 28 tiles + 1 partial).
+ *
+ * A 64x32 map is stored as TWO 32x32 screens: columns 0-31 at word 0x0000,
+ * columns 32-63 at word 0x0400. Rows therefore span both and need two DMAs. */
+#define MAP_OFF_COL     0x0400u    /* 64 B: 32 entries (one column)        */
+#define MAP_OFF_ROWA    0x0440u    /* 64 B: row half in screen A           */
+#define MAP_OFF_ROWB    0x0480u    /* 64 B: row half in screen B           */
+#define MAP_OFF_FULLA   0x0500u    /* 2048 B: seed fill, screen A          */
+#define MAP_OFF_FULLB   0x0D00u    /* 2048 B: seed fill, screen B          */
+#define MAP_OFF_CHR     0x1500u    /* 512 B: 16 tiles, 4bpp                */
+#define MAP_OFF_CGRAM   0x1700u    /* 32 B: 16 colours                     */
+#define MAP_TM_A_VWORD  0x0000u    /* screen A: tilemap columns 0..31      */
+#define MAP_TM_B_VWORD  0x0400u    /* screen B: tilemap columns 32..63     */
 #define MAP_CHR_VWORD   0x2000u
-#define MAP_BG1SC       0x00u      /* tilemap base 0, 32x32                */
+#define MAP_BG1SC       0x01u      /* base 0, size 01 = 64x32              */
 #define MAP_BG12NBA     0x02u      /* BG1 CHR base 0x2000 words            */
 
 #define MAP_MT_SIDE     2u                    /* 2x2 tiles per metatile     */
@@ -286,6 +299,10 @@ static void hx_map_build_assets(void) {
     map_layer.def_count = MAP_DEFS;
     map_layer.mt_side   = MAP_MT_SIDE;
     map_layer.oob_entry = 0;
+    /* Torus. 128 map tiles is a multiple of both the 64-wide and 32-high SNES
+     * tilemap wrap, so the camera can roll over at the map size with no
+     * discontinuity in either content or tilemap slot. */
+    map_layer.wrap      = 1;
 }
 
 static void e_bg_scroll_xy(uint8_t *c, size_t *p, uint16_t hofs, uint16_t vofs) {
@@ -309,37 +326,72 @@ static void hx_map_stage(uint32_t base) {
     e_lda_sta8(c, &p, MAP_BG12NBA, 0x210Bu);
     e_bg_scroll_xy(c, &p, (uint16_t)g_map_cam_x, (uint16_t)g_map_cam_y);
 
+    /* Invariant: tilemap column (T & 63) holds world tile column T, and
+     * tilemap row (Ty & 31) holds world tile row Ty. Everything below just
+     * maintains that as the camera moves. */
+    const int cam_tx = g_map_cam_x >> 3;
+    const int cam_ty = g_map_cam_y >> 3;
+
     uint32_t bytes = 0;
     if (g_map_seed_frames > 0) {
-        /* Startup: CHR, palette and the whole tilemap. */
+        /* Startup: CHR, palette, and both tilemap screens. Each tilemap column
+         * c takes the world column in [cam_tx, cam_tx+63] that satisfies the
+         * invariant, so the whole 64-wide wrap is valid around the camera. */
         memcpy(&g_window[base + MAP_OFF_CHR], &g_window[MAP_OFF_CHR], MAP_TILES * 32u);
         memcpy(&g_window[base + MAP_OFF_CGRAM], &g_window[MAP_OFF_CGRAM], 32u);
-        hx421_metatile_rect(&map_layer, g_map_cam_x >> 3, g_map_cam_y >> 3, 32, 32,
-                            (Hx421TileEntry *)&g_window[base + MAP_OFF_FULL], 32);
+        Hx421TileEntry *sa = (Hx421TileEntry *)&g_window[base + MAP_OFF_FULLA];
+        Hx421TileEntry *sb = (Hx421TileEntry *)&g_window[base + MAP_OFF_FULLB];
+        for (int cc = 0; cc < 64; ++cc) {
+            int tx = cam_tx + (((cc - cam_tx) % 64) + 64) % 64;      /* T&63 == cc */
+            Hx421TileEntry col[32];
+            hx421_metatile_column(&map_layer, tx, cam_ty, 32, col);
+            Hx421TileEntry *scr = (cc < 32) ? sa : sb;
+            for (int rr = 0; rr < 32; ++rr) {
+                int ty = cam_ty + rr;
+                scr[(ty & 31) * 32 + (cc & 31)] = col[rr];
+            }
+        }
         e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_CHR), MAP_TILES * 32u, MAP_CHR_VWORD);
         e_dma_cgram_slot(c, &p, (uint16_t)(base + MAP_OFF_CGRAM), 32u, 0x00);
-        e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_FULL), 2048u, MAP_TM_VWORD);
-        bytes = MAP_TILES * 32u + 32u + 2048u;
+        e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_FULLA), 2048u, MAP_TM_A_VWORD);
+        e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_FULLB), 2048u, MAP_TM_B_VWORD);
+        bytes = MAP_TILES * 32u + 32u + 4096u;
         g_map_seed_frames--;
     } else {
-        /* Steady state: at most one entering column and one entering row. */
-        int rtx = (g_map_cam_x + 255) >> 3;            /* right edge tile  */
-        int bty = (g_map_cam_y + 223) >> 3;            /* bottom edge tile */
+        /* Steady state: at most one entering column and one entering row.
+         * The entering column is one tile PAST the right edge, so it lands
+         * well before it is displayed and far from the left edge's slot. */
+        int rtx = ((g_map_cam_x + 255) >> 3) + 1;
+        int bty = ((g_map_cam_y + 223) >> 3) + 1;
         if (rtx != g_map_last_rtx) {
             Hx421TileEntry *col = (Hx421TileEntry *)&g_window[base + MAP_OFF_COL];
-            hx421_metatile_column(&map_layer, rtx, g_map_cam_y >> 3, 32, col);
-            /* column (rtx & 31) of a 32x32 map: stride 32 words */
+            hx421_metatile_column(&map_layer, rtx, cam_ty, 32, col);
+            /* rows are written in wrap order, so rotate to match (Ty & 31) */
+            Hx421TileEntry rot[32];
+            for (int i = 0; i < 32; ++i) rot[(cam_ty + i) & 31] = col[i];
+            memcpy(col, rot, sizeof rot);
+            uint16_t vbase = ((rtx & 63) < 32) ? MAP_TM_A_VWORD : MAP_TM_B_VWORD;
             e_dma_vram_slot_m(c, &p, (uint16_t)(base + MAP_OFF_COL), 64u,
-                              (uint16_t)(MAP_TM_VWORD + (rtx & 31)), VMAIN_STEP32);
+                              (uint16_t)(vbase + (rtx & 31)), VMAIN_STEP32);
             bytes += 64u;
             g_map_last_rtx = rtx;
         }
         if (bty != g_map_last_bty) {
-            Hx421TileEntry *row = (Hx421TileEntry *)&g_window[base + MAP_OFF_ROW];
-            hx421_metatile_row(&map_layer, bty, g_map_cam_x >> 3, 32, row);
-            e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_ROW), 64u,
-                            (uint16_t)(MAP_TM_VWORD + (bty & 31) * 32));
-            bytes += 64u;
+            /* A row spans both screens: 64 entries as two 32-entry DMAs. */
+            Hx421TileEntry *ra = (Hx421TileEntry *)&g_window[base + MAP_OFF_ROWA];
+            Hx421TileEntry *rb = (Hx421TileEntry *)&g_window[base + MAP_OFF_ROWB];
+            for (int cc = 0; cc < 64; ++cc) {
+                int tx = cam_tx + (((cc - cam_tx) % 64) + 64) % 64;
+                Hx421TileEntry one[1];
+                hx421_metatile_row(&map_layer, bty, tx, 1, one);
+                ((cc < 32) ? ra : rb)[cc & 31] = one[0];
+            }
+            uint16_t roff = (uint16_t)((bty & 31) * 32);
+            e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_ROWA), 64u,
+                            (uint16_t)(MAP_TM_A_VWORD + roff));
+            e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_ROWB), 64u,
+                            (uint16_t)(MAP_TM_B_VWORD + roff));
+            bytes += 128u;
             g_map_last_bty = bty;
         }
     }
@@ -1492,8 +1544,13 @@ HX421_API uint8_t hx421_cart_read(uint32_t addr) {
  * wrapping well inside the map so neither seam ever falls outside it. */
 static void hx_produce_map_frame(void) {
     if (!g_rom_loaded) return;
-    g_map_cam_x = (int)((g_map_frames * 1u) % (MAP_PIX_W - 256u));
-    g_map_cam_y = (int)((g_map_frames / 2u) % (MAP_PIX_H - 224u));
+    /* Wrap at the FULL map size, not (size - viewport). The map is a torus and
+     * 128 tiles divides evenly into both tilemap wraps, so this rolls over with
+     * no jump. Wrapping at (size - viewport) instead would teleport the camera
+     * backwards by most of the map in one frame, leaving the screen stale for
+     * ~96 frames while the seams repaired it one column at a time. */
+    g_map_cam_x = (int)((g_map_frames * 1u) % MAP_PIX_W);
+    g_map_cam_y = (int)((g_map_frames / 2u) % MAP_PIX_H);
     hx_map_stage(g_back ? HX_BUF1_BASE : HX_BUF0_BASE);
     g_window[HX_FRAME_READY_ADDR] = (uint8_t)(g_back + 1);
 }
