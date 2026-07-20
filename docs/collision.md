@@ -48,14 +48,44 @@ straight onto them without consuming LEs.
 ## Deflection without per-polygon tests
 
 Each mesh carries a small set of **collision planes** (normal + distance), authored or derived at
-bake time — the large flat surfaces that matter for bouncing, not the full hull. On a hit:
+bake time — the large flat surfaces that matter for bouncing, not the full hull.
 
-1. pick the plane whose normal most opposes the incoming velocity
-2. return that normal with the collision record
-3. the game reflects velocity about it: `v' = v - 2(v . n)n`
+### Contacts are a SET, not a winner
 
-That gives believable bounces off walls, floors and ramps at a fraction of hull-test cost, and it
-degrades gracefully — a mesh with one plane still behaves like a wall.
+Picking the single plane that most opposes the velocity is wrong wherever two surfaces meet: the
+object reflects off one wall straight into the other, then off that one back into the first. The
+symptom is **jitter in corners, or tunnelling through the seam** — and corners are exactly where
+players drive into walls.
+
+Resolve all simultaneous contacts together:
+
+1. **Collect** every plane penetrated this frame (cap at 4; more than that is a wedge).
+2. **Deduplicate** normals within ~15 degrees of each other. A curved surface approximated by
+   several planes would otherwise apply nearly the same correction repeatedly and launch the object.
+3. **Orthogonalise** what remains (Gram-Schmidt over 2-3 vectors).
+4. **Reflect against all of them at once:**
+
+```
+v' = v - 2 * SUM_i (v . n_i) n_i
+```
+
+For walls meeting at a right angle — the common case — this is exact, and it is the same cost as
+one reflection per contact: a dot product and a scaled subtract each.
+
+Degenerate cases fall out naturally. **One contact** reduces to the plain `v - 2(v.n)n`.
+**Three or more** after dedup means wedged: zero the velocity rather than resolving, since any
+reflection just re-penetrates something.
+
+Sliding instead of bouncing is the same machinery with the reflection coefficient dropped from 2 to
+1 (`v' = v - (v.n)n` removes the into-surface component instead of reversing it), so a character
+controller and a bouncing projectile share one path.
+
+### Who resolves
+
+The collision record returns **the normal set**, not just a resolved vector, so the game chooses
+bounce, slide, or stop per object. The coprocessor can also return the precomputed `v'` for the
+common case, saving the ARM the vector math — but the set is the source of truth, since response
+policy is game logic rather than geometry.
 
 **Crash-through** is a per-object flag rather than a separate path: `solid` reflects,
 `passthrough` reports the hit and lets the object continue, which is what breakable scenery and
@@ -69,7 +99,7 @@ object_spawn(mesh_id, flags)           -> object_id
 object_set_transform(id, pos, rot)     (the hot path, one per moving object per frame)
 object_set_velocity(id, v)
 object_despawn(id)
-collisions_read()                      -> list of {a, b, normal, depth}
+collisions_read()                      -> list of {a, b, normals[<=4], count, depth}
 ```
 
 Transforms are the only per-frame traffic: 48 B per moving object over SPI at ~380 KB/s current
