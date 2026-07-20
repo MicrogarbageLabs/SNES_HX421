@@ -81,6 +81,24 @@ SD ──(seek by frame index)──> FIFO of decoded frames ──> sub-frame s
 The engine pulls automatically — from the FIFO in steady state, from the PSRAM preroll head at
 start. The game never names a frame or a sub-frame.
 
+### Pack load primes EVERY head
+
+On loading an FMV pack the loader primes the head of **every clip in it** into PSRAM and builds a
+small reference table; the ARM then selects a head by index and arbitrates the tail off SD. The
+arithmetic is comfortable:
+
+```
+head length      1 frame covers 67 ms at 15 fps, against a worst-case
+                 45-60 ms SD seek + arbiter wait  ->  2 frames is ample margin
+head size        2 x 38536 B  =  ~77 KB per clip
+32 clips primed  ~2.5 MB of 16 MB PSRAM
+reference table  ~16 B per clip (psram offset, frames, clip id)  ->  512 B
+```
+
+So "prime everything" costs a couple of MB of a resource we have in abundance, and the selection
+table stays a few hundred bytes — small enough to hand across SPI whole. Storage on the card is
+not a consideration; only PSRAM residency and seek latency are.
+
 ## API
 
 Game-facing, deliberately small:

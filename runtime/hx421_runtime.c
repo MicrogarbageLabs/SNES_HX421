@@ -610,19 +610,30 @@ static void hx_produce_map_frame(void);
 /* window staging offsets within a buffer (the emitted body bakes these) */
 #define FMV_OFF_CGRAM      0x0400u   /* 16 colors x2 = 32 B (band 0 only)   */
 #define FMV_OFF_TILEMAP    0x0500u   /* 32x32 map words = 2048 B (band 0)   */
-#define FMV_OFF_CHR        0x0D00u   /* the band's CHR chunk (<= 7040 B)    */
+#define FMV_OFF_CHR        0x0D00u   /* the band's CHR run (<= 7040 B)      */
+#define FMV_OFF_CHR_C      0x2900u   /* band 3's second run: contested tiles */
 
 /* FMV VRAM homes (words) + BG regs. Real .fmv changes CGRAM + tilemap (palette
  * bits) every frame, so BOTH are double-buffered alongside CHR; band 3 flips
  * BG1SC + BG12NBA atomically (BG1SC tilemap base is in 1024-WORD units). */
+/* CHR buffers OVERLAP by one 4096-word granule — "1 3/4 buffers".
+ * BG12NBA addresses CHR in 4096-word (8 KB) granules, so placing B one granule
+ * earlier than the no-overlap position reclaims exactly 8 KB of VRAM:
+ *     no overlap  A 0..12495, B 16384..28879   span 28880 words
+ *     overlap     A 0..12495, B 12288..24783   span 24784 words   -> 8 KB saved
+ * The shared region is words 12288..12495 — 208 words, 13 TILES: A's tiles
+ * 768..780 against B's tiles 0..12. Those 13 are written LAST (band 3), after
+ * the front buffer has displayed for the final time and immediately before the
+ * flip. See docs/fmv-engine.md. */
 #define FMV_CHR_A_VWORD    0x0000u   /* CHR base A (word)                   */
-#define FMV_CHR_B_VWORD    0x4000u   /* CHR base B (word)                   */
+#define FMV_CHR_B_VWORD    0x3000u   /* CHR base B: 12288, one granule early */
+#define FMV_CONTESTED      13        /* tiles 0..12 collide across buffers   */
 #define FMV_TM_A_VWORD     0x7C00u   /* tilemap base A (word)               */
 #define FMV_TM_B_VWORD     0x7800u   /* tilemap base B (word)               */
 #define FMV_BG1SC_A        0x7Cu     /* ($7C00>>10)<<2 = 31<<2, 32x32 map   */
 #define FMV_BG1SC_B        0x78u     /* ($7800>>10)<<2 = 30<<2, 32x32 map   */
-#define FMV_BG12NBA_A      0x00u     /* BG1 CHR base $0000 ($0000/$1000=0)  */
-#define FMV_BG12NBA_B      0x04u     /* BG1 CHR base $4000 ($4000/$1000=4)  */
+#define FMV_BG12NBA_A      0x00u     /* BG1 CHR base 0     (0/4096 = 0)     */
+#define FMV_BG12NBA_B      0x03u     /* BG1 CHR base 12288 (12288/4096 = 3) */
 
 /* real .fmv (FMV2) layout: unit = [audio abytes][CGRAM 256][tilemap 1560][CHR 24960] */
 #define FMV_CGRAM_BYTES    256u      /* 8 palettes x 16 colours             */
@@ -655,7 +666,18 @@ static void hx_produce_map_frame(void);
  * NOTE: our kernel has no cycle-budgeted chainer (the emitter replaced it), so
  * an overrun is NOT deferred — it writes during active display and is visible.
  * Budget discipline is entirely here. */
-static const int fmv_band_tiles[4] = { 205, 184, 205, 187 };   /* sum = 781 */
+/* Bands now carry tile RANGES, not just counts, because the 13 contested tiles
+ * (0..12) must arrive LAST — writing them early would corrupt the front
+ * buffer's tiles 768..780 while it is still on screen. Bands 0-2 and the first
+ * run of band 3 deliver the free range 13..780; band 3 then delivers 0..12 as
+ * a SECOND run. Per-band totals stay under the ~7452 B burst:
+ *   b0 208t 6656 + TM 512 + OAM 256                       = 7424
+ *   b1 188t 6016 + TM 512 + OBJ 384 + pal 256 + OAM 256   = 7424
+ *   b2 208t 6656 + TM 512 + OAM 256                       = 7424
+ *   b3 164t 5248 + 13t 416 + TM 512 + CGRAM 256 + OAM 544 = 6976 */
+static const struct { int start, count; } fmv_band_run[4] = {
+    {  13, 208 }, { 221, 188 }, { 409, 208 }, { 617, 164 },
+};
 
 /* the PSRAM-analog frame store (host RAM): the CURRENT decoded frame. Only a
  * subframe band of this is copied into the window (BRAM) per NMI. */
@@ -1283,13 +1305,16 @@ static void hx_emit_fmv_band(uint32_t base, int band, uint16_t back_chr, uint16_
      * band-3 flip, and it keeps 2 KB off band 0. */
     e_dma_vram_slot(c, &p, (uint16_t)(base + FMV_OFF_TILEMAP), 512u,
                     (uint16_t)(back_tm + band * 256));
-    /* every band: its CHR chunk -> BACK CHR base + (start_tile * 16 words) */
-    int start_tile = 0;
-    for (int i = 0; i < band; ++i) start_tile += fmv_band_tiles[i];
-    uint16_t chr_bytes = (uint16_t)(fmv_band_tiles[band] * 32);
-    uint16_t chr_vword = (uint16_t)(back_chr + start_tile * 16);
-    e_dma_vram_slot(c, &p, (uint16_t)(base + FMV_OFF_CHR), chr_bytes, chr_vword);
+    /* every band: its CHR run -> BACK CHR base + (start_tile * 16 words) */
+    e_dma_vram_slot(c, &p, (uint16_t)(base + FMV_OFF_CHR),
+                    (uint16_t)(fmv_band_run[band].count * 32),
+                    (uint16_t)(back_chr + fmv_band_run[band].start * 16));
     if (band == 3) {
+        /* SECOND run: the contested tiles 0..12. Last thing written before the
+         * flip, so the front buffer's overlapping tiles 768..780 stay intact
+         * for every scanline that still displays them. */
+        e_dma_vram_slot(c, &p, (uint16_t)(base + FMV_OFF_CHR_C),
+                        (uint16_t)(FMV_CONTESTED * 32), back_chr);
         /* frame complete: CGRAM (this frame's palette) + atomic display flip */
         e_dma_cgram_slot(c, &p, (uint16_t)(base + FMV_OFF_CGRAM), FMV_CGRAM_BYTES, 0x00);
         e_lda_sta8(c, &p, back_sc,  0x2107u);          /* FLIP tilemap -> back */
@@ -1820,10 +1845,11 @@ static void hx_produce_fmv_band(void) {
 
     /* copy ONLY THIS band from the PSRAM store into the window (BRAM). CHR
      * every band; the tilemap on band 0; the CGRAM on band 3 (with the flip). */
-    int start_tile = 0;
-    for (int i = 0; i < band; ++i) start_tile += fmv_band_tiles[i];
-    uint32_t chr_bytes = (uint32_t)fmv_band_tiles[band] * 32u;
-    memcpy(&g_window[base + FMV_OFF_CHR], &fmv_chr[start_tile * 32], chr_bytes);
+    memcpy(&g_window[base + FMV_OFF_CHR],
+           &fmv_chr[fmv_band_run[band].start * 32],
+           (size_t)fmv_band_run[band].count * 32u);
+    if (band == 3)                                  /* contested tiles 0..12 */
+        memcpy(&g_window[base + FMV_OFF_CHR_C], &fmv_chr[0], FMV_CONTESTED * 32u);
     /* this band's 512-byte quarter of the tilemap (decoded at band 0, so all
      * four quarters come from the same frame) */
     memcpy(&g_window[base + FMV_OFF_TILEMAP], &fmv_tilemap[band * 512], 512);
