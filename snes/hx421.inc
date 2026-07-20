@@ -132,9 +132,18 @@ HX_MB_JOYPADS_L     = (HX421_BANK << 16) | HX_MB_JOYPADS
 HX_MB_DOORBELL_L    = (HX421_BANK << 16) | HX_MB_DOORBELL
 HX_MB_BURST_V_L     = (HX421_BANK << 16) | HX_MB_BURST_V
 
-; Scanline at which the kernel pushes the pads. Auto-joypad latches early in
-; vblank (~225) and takes ~3 lines, so 230 is safely after it completes.
-PAD_LINE            = 230
+; Scanline at which the kernel pushes the pads.
+;
+; MUST be in the VISIBLE region, not vblank. The DMA burst starts at VIS_END
+; and runs until V~0-10 of the NEXT frame (measured via HX_MB_BURST_V) — about
+; 56 scanlines with the CPU held off the bus. Any PAD_LINE inside that window
+; is simply swallowed: its per-line IRQ never dispatches, and the push becomes
+; dead code that assembles perfectly. 230 was inside it.
+;
+; Auto-joypad latches early in vblank, so reading at a visible line yields the
+; PREVIOUS vblank's values — one frame stale, which is what every SNES game
+; does anyway and is invisible at 60 Hz.
+PAD_LINE            = 100
 
 ; ============================================================
 ;  Kernel WRAM working set (bank $00 low RAM)

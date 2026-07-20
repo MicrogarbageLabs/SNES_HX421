@@ -2436,6 +2436,19 @@ static void hx_mailbox_doorbell(void) {
 }
 
 HX421_API void hx421_cart_write(uint32_t addr, uint8_t data) {
+    /* Log the first few writes UNCONDITIONALLY, before any filtering. Without
+     * this, a write landing at an unexpected address is invisible and cannot be
+     * told apart from no writes arriving at all — which are very different
+     * faults (address/bank mismatch vs bus routing or dead kernel code). */
+    static uint64_t seen;
+    if (seen < 8u) {
+        fprintf(stderr, "hx421 cw: write #%llu addr=%06X (win %04X) data=%02X\n",
+                (unsigned long long)seen, (unsigned)(addr & 0xFFFFFFu),
+                (unsigned)(addr & 0xFFFFu), data);
+        fflush(stderr);
+    }
+    seen++;
+
     const uint32_t a = addr & 0xFFFFu;      /* same 64 KB window as cart_read */
     if (a < HX421_MB_BASE || a >= HX421_MB_BASE + HX421_MB_BYTES) {
         g_mb_rejected++;                    /* rest of the cart is read-only */
