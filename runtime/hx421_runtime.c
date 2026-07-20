@@ -278,6 +278,7 @@ typedef struct {
      * sliding this window and filling whatever entered it. */
     int               win_l, win_t;
     int               seeded;
+    int               want_reseed;    /* deferred: budget was spent this frame */
 } MapLayerRT;
 
 static uint16_t       map_grid  [MAP_LAYERS][MAP_W_MT * MAP_H_MT];
@@ -285,9 +286,34 @@ static uint16_t       map_grid_t[MAP_LAYERS][MAP_W_MT * MAP_H_MT];  /* transpose
 static Hx421TileEntry map_defs  [MAP_LAYERS][MAP_DEFS * MAP_MT_SIDE * MAP_MT_SIDE];
 static MapLayerRT     map_rt[MAP_LAYERS];
 static int      g_map_mode;
-static int      g_map_seed_frames;                /* one layer seeded per frame */
+static int      g_map_assets_pending;             /* bulk CHR+palette push due */
+static unsigned g_map_area;                       /* current area index        */
 static uint64_t g_map_frames;
-static uint32_t g_map_seam_bytes;                 /* steady-state accounting */
+static uint32_t g_map_seam_bytes;                 /* steady-state accounting   */
+#define MAP_AREA_FRAMES 600u                      /* ~10 s per area            */
+
+/* Palette for the current area. An area transition rebuilds this and pushes it
+ * in bulk under blank — the shape a room or scene change takes. Channels
+ * rotate per area so the change is unmistakable on screen. */
+static void hx_map_build_palette(void) {
+    static const uint8_t rgb[16][3] = {
+        {  8,  8, 16},{ 40, 90, 40},{ 60,130, 55},{ 90,160, 70},
+        {150,140, 90},{170,120, 60},{110, 80, 50},{ 70, 60, 50},
+        { 60,110,180},{ 90,150,210},{180,180,190},{220,220,230},
+        {130, 60, 60},{170, 90, 70},{200,150, 80},{240,220,140},
+    };
+    uint8_t *cg = &g_window[MAP_OFF_CGRAM];
+    for (int i = 0; i < 16; ++i) {
+        int r = rgb[i][0], g = rgb[i][1], b = rgb[i][2], rr, gg, bb;
+        switch (g_map_area % 3u) {
+            case 1:  rr = g; gg = b; bb = r; break;
+            case 2:  rr = b; gg = r; bb = g; break;
+            default: rr = r; gg = g; bb = b; break;
+        }
+        uint16_t v = (uint16_t)(((bb >> 3) << 10) | ((gg >> 3) << 5) | (rr >> 3));
+        cg[i * 2] = (uint8_t)v; cg[i * 2 + 1] = (uint8_t)(v >> 8);
+    }
+}
 
 /* Shared 4bpp tile set. TILE 0 IS FULLY TRANSPARENT (all planes zero = colour
  * index 0), which is what lets the front layer show the back one through it. */
@@ -309,17 +335,7 @@ static void hx_map_build_assets(void) {
             tile[16 + 2 * y + 1] = (c & 8) ? 0xFF : 0x00;
         }
     }
-    uint8_t *cg = &g_window[MAP_OFF_CGRAM];
-    static const uint8_t rgb[16][3] = {
-        {  8,  8, 16},{ 40, 90, 40},{ 60,130, 55},{ 90,160, 70},
-        {150,140, 90},{170,120, 60},{110, 80, 50},{ 70, 60, 50},
-        { 60,110,180},{ 90,150,210},{180,180,190},{220,220,230},
-        {130, 60, 60},{170, 90, 70},{200,150, 80},{240,220,140},
-    };
-    for (int i = 0; i < 16; ++i) {
-        uint16_t v = (uint16_t)(((rgb[i][2] >> 3) << 10) | ((rgb[i][1] >> 3) << 5) | (rgb[i][0] >> 3));
-        cg[i * 2] = (uint8_t)v; cg[i * 2 + 1] = (uint8_t)(v >> 8);
-    }
+    hx_map_build_palette();
 
     /* Layer 1 (BG2, BACK): dense terrain, every metatile opaque.
      * Layer 0 (BG1, FRONT): sparse — metatile 0 is entirely tile 0, i.e. fully
@@ -430,11 +446,10 @@ static uint32_t hx_map_seed_layer(uint32_t base, uint8_t *c, size_t *p, unsigned
  * served by a reseed instead — which also covers teleports and scene changes
  * with no special case. */
 static uint32_t hx_map_layer_goto(uint32_t base, uint8_t *c, size_t *p,
-                                  unsigned li, int nx, int ny) {
+                                  unsigned li, int nx, int ny, int *reseeds_left) {
     MapLayerRT *r = &map_rt[li];
     r->cam_x = nx;
     r->cam_y = ny;
-    if (!r->seeded) return hx_map_seed_layer(base, c, p, li);
 
     /* Keep the window centred so travel in either direction has lookahead. */
     const int want_l = (nx >> 3) - 16;
@@ -442,9 +457,19 @@ static uint32_t hx_map_layer_goto(uint32_t base, uint8_t *c, size_t *p,
     int dl = want_l - r->win_l;
     int dt = want_t - r->win_t;
 
-    if (dl > MAP_MAX_COLS || dl < -MAP_MAX_COLS ||
-        dt > MAP_MAX_ROWS || dt < -MAP_MAX_ROWS)
-        return hx_map_seed_layer(base, c, p, li);   /* cheaper than the strips */
+    const int needs_reseed = !r->seeded || r->want_reseed
+                           || dl >  MAP_MAX_COLS || dl < -MAP_MAX_COLS
+                           || dt >  MAP_MAX_ROWS || dt < -MAP_MAX_ROWS;
+    if (needs_reseed) {
+        /* A reseed is 4096 B — two in one frame would be 8192 against a
+         * ~6.2 KB vblank. Only one per frame; the rest defer and the field is
+         * held blank until every layer is current (see hx_map_stage). Without
+         * this the burst silently overruns and writes during active display. */
+        if (*reseeds_left <= 0) { r->want_reseed = 1; return 0; }
+        (*reseeds_left)--;
+        r->want_reseed = 0;
+        return hx_map_seed_layer(base, c, p, li);
+    }
 
     uint8_t *stage = &g_window[base + MAP_OFF_SEAM + li * MAP_SEAM_STRIDE];
     const uint16_t sbase = (uint16_t)(base + MAP_OFF_SEAM + li * MAP_SEAM_STRIDE);
@@ -503,33 +528,37 @@ static void hx_map_stage(uint32_t base) {
     }
 
     uint32_t bytes = 0;
-    if (g_map_seed_frames > 0) {
-        /* One layer per frame: both screens is 4096 B, and two layers plus CHR
-         * would be ~8.7 KB — past the ~6.2 KB vblank budget. The field is held
-         * blank until seeding finishes (see the action table below). */
-        unsigned li = MAP_LAYERS - (unsigned)g_map_seed_frames;
-        if (li == 0) {
-            memcpy(&g_window[base + MAP_OFF_CHR], &g_window[MAP_OFF_CHR], MAP_TILES * 32u);
-            memcpy(&g_window[base + MAP_OFF_CGRAM], &g_window[MAP_OFF_CGRAM], 32u);
-            e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_CHR), MAP_TILES * 32u, MAP_CHR_VWORD);
-            e_dma_cgram_slot(c, &p, (uint16_t)(base + MAP_OFF_CGRAM), 32u, 0x00);
-            bytes += MAP_TILES * 32u + 32u;
-        }
-        bytes += hx_map_seed_layer(base, c, &p, li);
-        g_map_seed_frames--;
-    } else {
-        /* Steady state: just tell each layer where it is. The engine derives
-         * the strips — the caller never names one. */
-        for (unsigned i = 0; i < MAP_LAYERS; ++i)
-            bytes += hx_map_layer_goto(base, c, &p, i, map_rt[i].cam_x, map_rt[i].cam_y);
+    int reseeds_left = 1;                 /* at most one 4096 B reseed per frame */
+
+    if (g_map_assets_pending) {
+        /* Bulk asset push — the shape an area/scene transition takes: new tile
+         * set and palette, uploaded once under blank where throughput does not
+         * matter. CHR is resident, never streamed per tile. */
+        memcpy(&g_window[base + MAP_OFF_CHR], &g_window[MAP_OFF_CHR], MAP_TILES * 32u);
+        memcpy(&g_window[base + MAP_OFF_CGRAM], &g_window[MAP_OFF_CGRAM], 32u);
+        e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_CHR), MAP_TILES * 32u, MAP_CHR_VWORD);
+        e_dma_cgram_slot(c, &p, (uint16_t)(base + MAP_OFF_CGRAM), 32u, 0x00);
+        bytes += MAP_TILES * 32u + 32u;
+        g_map_assets_pending = 0;
     }
+    /* Tell each layer where it is; the engine derives the strips, reseeding
+     * when the move is too large for them. Layers deferred for budget carry
+     * want_reseed and are served on following frames. */
+    for (unsigned i = 0; i < MAP_LAYERS; ++i)
+        bytes += hx_map_layer_goto(base, c, &p, i, map_rt[i].cam_x, map_rt[i].cam_y,
+                                   &reseeds_left);
     e8(c, &p, 0x6B);                                   /* rtl */
 
-    /* Full field visible once seeded; held blank while the layers seed, so a
-     * half-filled tilemap is never displayed. */
+    /* Held blank while ANY layer is still stale — during startup, and across
+     * an area transition where reseeds are spread over frames. A half-filled
+     * tilemap is never displayed. */
+    int stale = 0;
+    for (unsigned i = 0; i < MAP_LAYERS; ++i)
+        if (!map_rt[i].seeded || map_rt[i].want_reseed) stale = 1;
+
     uint8_t *act = &g_window[base + HX_OFF_ACTION];
     memset(act, 0, 512);
-    if (g_map_seed_frames > 0) {
+    if (stale) {
         for (int v = 0; v < 262; ++v) act[v] = 1;      /* force-blank field */
     } else {
         act[0] = 2;                                    /* unblank at line 0 */
@@ -1453,14 +1482,15 @@ HX421_API int hx421_init(const Hx421Config *cfg) {
     g_fmv_mode    = (getenv("HX421_FMV") != NULL);   /* FMV band pipeline */
     g_map_mode    = (!g_fmv_mode && getenv("HX421_MAP") != NULL);  /* scrolling map */
     if (g_map_mode) {
+        g_map_area = 0;
         hx_map_build_assets();
-        g_map_seed_frames = (int)MAP_LAYERS;          /* one layer per frame */
+        g_map_assets_pending = 1;                     /* CHR + palette on frame 0 */
         g_map_frames = 0;
         g_map_seam_bytes = 0;
         fprintf(stderr, "hx421 map: %ux%u px, %ux%u metatiles (%u tiles/side), "
-                        "%u parallax layers, seam-only after %d seed frames\n",
+                        "%u parallax layers; area change every %u frames\n",
                 MAP_PIX_W, MAP_PIX_H, MAP_W_MT, MAP_H_MT, MAP_MT_SIDE,
-                MAP_LAYERS, g_map_seed_frames);
+                MAP_LAYERS, MAP_AREA_FRAMES);
     }
     if (g_fmv_mode) {
         g_fmv_need_decode = 1;                        /* decode frame 0 on the first band 0 */
@@ -1690,10 +1720,26 @@ static void hx_produce_map_frame(void) {
     const uint64_t ty = (g_map_frames / 2u) % 3072u;
     const uint64_t mx = (tx < 2048u) ? tx : (4095u - tx);
     const uint64_t my = (ty < 1536u) ? ty : (3071u - ty);
+
+    /* Area transition every ~10 s: new palette pushed in bulk, and the camera
+     * teleports far enough that the seams cannot repair it — which is what
+     * exercises the reseed fallback and the one-reseed-per-frame budget. */
+    const unsigned area = (unsigned)(g_map_frames / MAP_AREA_FRAMES);
+    if (area != g_map_area) {
+        g_map_area = area;
+        hx_map_build_palette();
+        g_map_assets_pending = 1;
+        fprintf(stderr, "hx421 map: area %u — palette swap + camera jump "
+                        "(forces reseed, field blanks until current)\n", g_map_area);
+        fflush(stderr);
+    }
+    const int jump_x = (int)((g_map_area * 337u) % MAP_PIX_W);   /* ~42 tiles */
+    const int jump_y = (int)((g_map_area * 211u) % MAP_PIX_H);
+
     for (unsigned i = 0; i < MAP_LAYERS; ++i) {
         MapLayerRT *r = &map_rt[i];
-        r->cam_x = (int)((mx * r->par_num / r->par_den) % MAP_PIX_W);
-        r->cam_y = (int)((my * r->par_num / r->par_den) % MAP_PIX_H);
+        r->cam_x = (int)(((mx * r->par_num / r->par_den) + (uint64_t)jump_x) % MAP_PIX_W);
+        r->cam_y = (int)(((my * r->par_num / r->par_den) + (uint64_t)jump_y) % MAP_PIX_H);
     }
     hx_map_stage(g_back ? HX_BUF1_BASE : HX_BUF0_BASE);
     g_window[HX_FRAME_READY_ADDR] = (uint8_t)(g_back + 1);
