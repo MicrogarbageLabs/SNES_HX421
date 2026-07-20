@@ -97,6 +97,27 @@ painter's-algorithm renderer cannot do.
 Later: **60-colour blending of a 2bpp and a 4bpp layer** for a full-screen 240x200 framebuffer —
 the technique already explored for FMV. Filed as the endpoint, not the starting point.
 
+## How much fabric: ONE tile core
+
+```
+rasteriser  64 px x ~3 overdraw = ~192 cycles/tile @40 MHz = 4.8 us -> ~208 tiles/ms
+DMA drain   6.2 KB per vblank / 32 B                                -> ~11.6 tiles/ms
+```
+
+A single core is already **~18x faster than the DMA can drain it**. A second would idle. Replicating
+tile cores optimises the stage that is not the bottleneck — the same error as reaching for an
+out-of-order CPU when the memory system is the limit.
+
+What to build instead:
+
+- **Pipeline across stages**, not replicate one: bin frame N+1 while N rasterises, rasterise while
+  finished tiles DMA out.
+- **No separate tile queue.** The rasteriser writes finished tiles straight into the existing DMA
+  staging buffer (already budgeted at 12 KB), so the "queue" is storage we have.
+- **Spend multipliers on triangle SETUP** — edge equations and gradients — where the 56 idle 18x18
+  blocks pay without consuming LEs. Binning is cheap (~1000 triangles x ~6 tiles ≈ 0.5 ms) and does
+  not need replication either.
+
 ## Build order
 
 1. **Rasteriser core in C** — bin, edge-test, z-test, into a 64-px tile. Portable and integer-only,
