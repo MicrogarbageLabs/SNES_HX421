@@ -190,6 +190,17 @@ static size_t hx_emit_dma_body(uint32_t base, uint32_t tmap_src) {
 
 static void e_dma_cgram_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size, uint8_t cgadd);
 
+/* Burst-budget telemetry, reported by the kernel via HX421_MB_BURST_V.
+ * `lines` counts scanlines from the blank's start (VIS_END) to where the DMA
+ * burst finished, wrapping at 262, so it is directly comparable to the window
+ * we budget against. Measured, not estimated — the kernel has no
+ * cycle-budgeted chainer, so an overrun writes into active display silently. */
+static uint16_t g_burst_end_v;
+static uint16_t g_burst_lines;
+static uint16_t g_burst_worst;
+static uint64_t g_burst_overruns;
+static void hx_burst_sample(uint8_t vis_end);   /* defined with the mailbox */
+
 /* ---- SNES tilemap geometry -------------------------------------------
  * A BG tilemap is built from 32x32 SCREENS of 0x400 words each. The BGnSC
  * size bits select how many and in which arrangement:
@@ -574,10 +585,13 @@ static void hx_map_stage(uint32_t base) {
     if (g_map_frames > 8 && (g_map_frames % 120u) == 0u) {
         double avg = (double)g_map_seam_bytes / (double)(g_map_frames - 8u);
         fprintf(stderr, "hx421 map: cam=(%4d,%4d)  seam avg %.1f B/frame across "
-                        "%u layers (full tilemaps = %u B, %.0fx less)\n",
+                        "%u layers (full tilemaps = %u B, %.0fx less)  |  "
+                        "burst ended V=%u, used %u lines (worst %u), overruns=%llu\n",
                 map_rt[0].cam_x, map_rt[0].cam_y, avg, MAP_LAYERS,
                 MAP_LAYERS * 4096u,
-                avg > 0.0 ? (double)(MAP_LAYERS * 4096u) / avg : 0.0);
+                avg > 0.0 ? (double)(MAP_LAYERS * 4096u) / avg : 0.0,
+                g_burst_end_v, g_burst_lines, g_burst_worst,
+                (unsigned long long)g_burst_overruns);
         fflush(stderr);
     }
 }
@@ -1675,6 +1689,9 @@ HX421_API uint8_t hx421_cart_read(uint32_t addr) {
     if (g_rom_loaded && a == HX_FRAME_DONE_ADDR) {
         g_done_seen++;
         g_back ^= 1;                                   /* write the other buffer next */
+        /* The kernel wrote its burst-end scanline just before this strobe. */
+        hx_burst_sample(g_window[(g_back ? HX_BUF0_BASE : HX_BUF1_BASE) + HX_OFF_HDR_VIS_END]);
+
         if (g_fmv_mode) {
             g_fmv_av_started = 1;                      /* console live: audio may flow now */
             hx_spr_tick();                             /* cursor at 60 Hz, before staging */
@@ -2281,6 +2298,22 @@ static uint64_t g_mb_writes;      /* total accepted mailbox writes          */
 static uint64_t g_mb_rings;       /* doorbell strobes                       */
 static uint64_t g_mb_rejected;    /* writes outside the window (read-only)  */
 static uint16_t g_mb_pads[HX421_MAX_PADS];   /* last joypad block received  */
+
+static void hx_burst_sample(uint8_t vis_end) {
+    const uint8_t *mb = &g_window[HX421_MB_BURST_V];
+    uint16_t v = (uint16_t)(mb[0] | ((uint16_t)(mb[1] & 1u) << 8));
+    if (v >= 262u) return;                       /* not written yet */
+    g_burst_end_v = v;
+    /* lines consumed since the blank opened at VIS_END, modulo the frame */
+    g_burst_lines = (uint16_t)((v + 262u - vis_end) % 262u);
+    if (g_burst_lines > g_burst_worst) g_burst_worst = g_burst_lines;
+
+    /* Overrun: the burst was still running when the display unblanked. The
+     * blank runs VIS_END..261 then 0..TOP_LB-1, so finishing at a visible
+     * line means we wrote into active display. */
+    const uint8_t top_lb = g_window[(g_back ? HX_BUF0_BASE : HX_BUF1_BASE) + HX_OFF_HDR_TOP_LB];
+    if (v >= top_lb && v < vis_end) g_burst_overruns++;
+}
 
 /* Called on the doorbell write: the payload is complete, act on it. Runs on
  * the SNES's clock (inside a cart write), so keep it short — anything heavy

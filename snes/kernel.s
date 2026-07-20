@@ -327,6 +327,21 @@
     beq @exit
     stz K_BODY_PENDING          ; fire the emitted DMA body once per frame
     jsr fire_dma_body           ; jsl into the front buffer's emitted body (window)
+
+    ; --- report where the burst finished (mailbox) --------------------
+    ; Latch V immediately after the body returns and hand it to the
+    ; coprocessor, so it can MEASURE the blank it consumed instead of
+    ; estimating. We have no cycle-budgeted chainer: an overrun is not
+    ; deferred, it writes during active display and corrupts the picture
+    ; with no other symptom. ~10 cycles, worth it.
+    lda SLHV                    ; latch H/V
+    lda STAT78                  ; reset the OPVCT read toggle
+    lda OPVCT
+    sta f:HX_MB_BURST_V_L
+    lda OPVCT
+    and #$01
+    sta f:HX_MB_BURST_V_L+1
+
     lda f:HX_FRAME_DONE_L       ; strobe: DLL flips buffers + clears frame-ready
     bra @exit
 

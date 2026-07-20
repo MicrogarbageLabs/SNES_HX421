@@ -72,6 +72,12 @@ extern "C" {
 #define HX421_MB_BYTES     0x0100u
 #define HX421_MB_DOORBELL  0x70FFu   /* write here = payload complete    */
 #define HX421_MB_JOYPADS   0x7000u   /* 8 B: 4 ports x 16-bit pad word   */
+/* Scanline at which the kernel's DMA burst finished, written right after the
+ * emitted body returns (9-bit V: low byte, then bit 8). Lets the coprocessor
+ * MEASURE the blank window it actually consumed rather than estimating it —
+ * the kernel has no cycle-budgeted chainer, so an overrun is not deferred, it
+ * writes during active display and corrupts the picture silently. */
+#define HX421_MB_BURST_V   0x7010u   /* 2 B: V low, then V bit 8         */
 
 /* rom_select */
 enum {

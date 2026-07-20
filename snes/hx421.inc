@@ -127,8 +127,10 @@ HX_FRAME_DONE_L     = (HX421_BANK << 16) | HX_FRAME_DONE
 HX_MB_BASE          = $7000     ; 256 B writable
 HX_MB_JOYPADS       = $7000     ; 8 B: 4 ports x 16-bit pad word
 HX_MB_DOORBELL      = $70FF     ; write = payload complete
+HX_MB_BURST_V       = $7010     ; 2 B: scanline the DMA burst finished at
 HX_MB_JOYPADS_L     = (HX421_BANK << 16) | HX_MB_JOYPADS
 HX_MB_DOORBELL_L    = (HX421_BANK << 16) | HX_MB_DOORBELL
+HX_MB_BURST_V_L     = (HX421_BANK << 16) | HX_MB_BURST_V
 
 ; Scanline at which the kernel pushes the pads. Auto-joypad latches early in
 ; vblank (~225) and takes ~3 lines, so 230 is safely after it completes.
