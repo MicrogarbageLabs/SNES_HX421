@@ -31,6 +31,13 @@ obj/
 *.dll
 *.log
 
+# Encoder scratch: fmv_encode writes a preview image beside the CWD, and
+# clips/containers are assets, never sources.
+*.ppm
+*.fmv
+*.hxfp
+*.pcm
+
 # Editors / OS
 .vscode/
 .idea/
