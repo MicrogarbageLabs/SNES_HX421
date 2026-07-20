@@ -509,6 +509,10 @@ void hxa_set_lowlat(HxaService *s, size_t stream_frames, size_t channel_fill) {
     s->ll_chanfill = channel_fill;
 }
 
+void hxa_flush_pcm(HxaService *s) {
+    if (s) audio_ring_stream_reset(&s->ring);
+}
+
 void hxa_ring_stats(HxaService *s, uint32_t *underruns, uint32_t *overflows,
                     uint32_t *fill_frames) {
     if (underruns)   *underruns   = s ? atomic_load(&s->ring.underruns) : 0u;

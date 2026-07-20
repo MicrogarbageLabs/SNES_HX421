@@ -1126,9 +1126,30 @@ static volatile int      g_fmv_seek_req = -1;         /* >=0: reader seeks here 
 static volatile int      g_fmv_flush_req;             /* drop stale FIFO frames   */
 static uint64_t          g_fmv_started;               /* start() calls            */
 
+/* Playback stride in frames per video frame: 1 normal, N fast-forward, -N
+ * rewind, and seeking is arithmetic because units are FIXED SIZE — frame N is
+ * always at base + N*unit. So a scrub needs no rebuffering and no primed head:
+ * the reader is already streaming, it just reads a different offset. (Heads
+ * still matter for a COLD start and for jumping to another clip, where there
+ * is no stream running yet.)
+ *
+ * Audio is gated off while scrubbing — reversed or 4x audio is noise — and the
+ * ring is flushed on return to normal, so what is queued from before the scrub
+ * never plays. Without the flush you would hear the ring's whole depth of
+ * pre-scrub audio before the new position arrived. */
+static volatile int g_fmv_rate = 1;
+static volatile int g_fmv_resync;                     /* flush + refill audio */
+static void hx_fmv_audio_flush(void);                 /* defined with the mixer glue */
+
 static void fmv_seek_to(uint32_t frame) {             /* reader picks this up */
     g_fmv_seek_req  = (int)frame;
     g_fmv_flush_req = 1;
+}
+static void fmv_set_rate(int rate) {
+    if (rate == g_fmv_rate) return;
+    int was = g_fmv_rate;
+    g_fmv_rate = rate;
+    if (rate == 1 && was != 1) g_fmv_resync = 1;      /* scrub ended */
 }
 static void fmv_api_start(void) {
     if (g_fmv_state != FMV_PLAYING) { g_fmv_state = FMV_PLAYING; g_fmv_started++; }
@@ -1150,13 +1171,20 @@ static int fmv_read_next_unit(uint8_t *dst) {
         fseek(fmv_file, fmv_data_off + (long)f * (long)fmv_unit_bytes, SEEK_SET);
         fmv_cur_frame = f;
     }
-    if (fmv_cur_frame >= fmv_nframes ||
-        fread(dst, 1, fmv_unit_bytes, fmv_file) != fmv_unit_bytes) {
-        fseek(fmv_file, fmv_data_off, SEEK_SET);   /* loop */
-        fmv_cur_frame = 0;
+    /* Seek explicitly every frame: units are fixed size, so this is arithmetic
+     * and costs nothing, and it is REQUIRED for any stride other than +1. */
+    if (fmv_cur_frame >= fmv_nframes) fmv_cur_frame = 0;
+    fseek(fmv_file, fmv_data_off + (long)fmv_cur_frame * (long)fmv_unit_bytes, SEEK_SET);
+    if (fread(dst, 1, fmv_unit_bytes, fmv_file) != fmv_unit_bytes) {
+        fmv_cur_frame = 0;                          /* short read -> rewind  */
+        fseek(fmv_file, fmv_data_off, SEEK_SET);
         if (fread(dst, 1, fmv_unit_bytes, fmv_file) != fmv_unit_bytes) return 0;
     }
-    fmv_cur_frame++;
+    /* advance by the current stride, wrapping in both directions */
+    long nxt = (long)fmv_cur_frame + g_fmv_rate;
+    while (nxt < 0)                    nxt += (long)fmv_nframes;
+    while (nxt >= (long)fmv_nframes)   nxt -= (long)fmv_nframes;
+    fmv_cur_frame = (uint32_t)nxt;
     return 1;
 }
 
@@ -1269,13 +1297,17 @@ static DWORD WINAPI fmv_reader_fn(LPVOID arg) {
          * this gate the ring plays out and starves during that blank period, putting
          * audio ahead of picture before frame 0 is ever shown. Once video is live we
          * flush the decoded backlog in order, so audio starts WITH it. */
+        /* Scrub ended: drop audio queued from before the jump, so the new
+         * position is heard now instead of after the ring's whole depth. */
+        if (g_fmv_resync) { g_fmv_resync = 0; hx_fmv_audio_flush(); }
         if (g_fmv_av_started) {
             unsigned wc = atomic_load(&fmv_fifo_w);
             unsigned rc = atomic_load(&fmv_fifo_r);
             if (fmv_apush < rc) fmv_apush = rc;    /* never read a recycled slot */
             while (fmv_apush < wc) {
                 FmvFrame *pf = &fmv_fifo[fmv_apush % FMV_FIFO_MAX];
-                if (fmv_audio_voice != AUDIO_VOICE_NONE && pf->audio_frames)
+                /* Gate audio while scrubbing: reversed or 4x audio is noise. */
+                if (g_fmv_rate == 1 && fmv_audio_voice != AUDIO_VOICE_NONE && pf->audio_frames)
                     hx421_fmv_feed_audio(pf->audio, pf->audio_frames);
                 fmv_apush++;
             }
@@ -2147,6 +2179,19 @@ static void hx421_audio_worker_stop(void) {
     if (g_audio_cs_init) { DeleteCriticalSection(&g_audio_cs); g_audio_cs_init = 0; }
 }
 
+/* Drop audio queued for a position we have jumped away from. Serialized with
+ * the render worker, since the mixer may be draining the ring concurrently. */
+static void hx_fmv_audio_flush(void) {
+    if (!g_svc) return;
+    if (g_audio_cs_init) {
+        EnterCriticalSection(&g_audio_cs);
+        hxa_flush_pcm(g_svc);
+        LeaveCriticalSection(&g_audio_cs);
+    } else {
+        hxa_flush_pcm(g_svc);
+    }
+}
+
 /* feed FMV audio + advance the drift PLL, serialized with the worker's render
  * when the WASAPI sink is live (else a plain single-threaded feed). */
 static void hx421_fmv_feed_audio(const int16_t *stereo, uint32_t frames) {
@@ -2420,6 +2465,18 @@ static void hx_mailbox_doorbell(void) {
             if (pressed & 0x4000u) {                      /* Y = stop */
                 fmv_api_stop();
                 fprintf(stderr, "hx421 fmv: STOP (rewound, held)\n");
+            }
+            /* L / R HELD scrub. Level-triggered, not edge: releasing returns
+             * to normal rate, which is what resyncs the audio. No head and no
+             * rebuffering needed — the reader is already streaming and fixed
+             * unit size makes any frame one fseek away. */
+            int rate = 1;
+            if (now & 0x0020u) rate = -4;                 /* L: rewind 4x  */
+            if (now & 0x0010u) rate =  4;                 /* R: forward 4x */
+            if (rate != g_fmv_rate) {
+                fmv_set_rate(rate);
+                fprintf(stderr, "hx421 fmv: rate %+d (frame %u)%s\n",
+                        rate, fmv_cur_frame, rate == 1 ? " — audio resync" : " — audio gated");
             }
             fflush(stderr);
         }

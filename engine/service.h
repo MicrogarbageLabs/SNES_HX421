@@ -116,6 +116,12 @@ size_t hxa_feed_pcm(HxaService *s, const int16_t *stereo, size_t frames);
 void hxa_ring_stats(HxaService *s, uint32_t *underruns, uint32_t *overflows,
                     uint32_t *fill_frames);
 
+/* Drop everything queued in the push ring. For a stream that has JUMPED — a
+ * seek, or resuming after a scrub — where the buffered audio belongs to the
+ * old position and would otherwise play for the ring's full depth before the
+ * new position was heard. Caller must serialize against hxa_render. */
+void hxa_flush_pcm(HxaService *s);
+
 /* Staging depths for a ring-fed (FMV) voice, in frames. These ARE output
  * latency: the player's streaming buffer plus the mixer-channel prefill sit
  * ahead of the playhead, so deep values put audio behind a near-instant video
