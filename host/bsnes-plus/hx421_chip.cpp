@@ -87,6 +87,10 @@ bool Hx421::try_load() {
   // Resolved directly so a missing symbol is silent, not a scary line.
   p_post_mouse = reinterpret_cast<decltype(p_post_mouse)>(dll_sym(h, "hx421_post_mouse"));
 
+  // Optional export (ABI 1.1+): SNES -> cart mailbox writes. A DLL without it
+  // simply leaves the cart read-only, which is the pre-1.1 behaviour.
+  p_cart_write = reinterpret_cast<decltype(p_cart_write)>(dll_sym(h, "hx421_cart_write"));
+
   // HX421 cmd: optional audio command channel export (older DLLs lack it —
   // a missing symbol must NOT fail load). Gated at runtime on $HX421_CMD so
   // the interactive test only issues commands when explicitly asked.
@@ -136,8 +140,11 @@ uint8 Hx421::read(unsigned addr) {
   return p_cart_read(addr & 0xFFFFFF);
 }
 
-void Hx421::write(unsigned, uint8) {
-  // Cart bus is read-only: SNES writes here are open-bus.
+void Hx421::write(unsigned addr, uint8 data) {
+  // Forward everything; the DLL accepts only its mailbox window and ignores
+  // the rest, so the cart stays effectively read-only outside it. Filtering
+  // here as well would duplicate the address map in two places.
+  if(dll_handle && p_cart_write) p_cart_write(addr & 0xFFFFFF, data);
 }
 
 unsigned Hx421::size() const {

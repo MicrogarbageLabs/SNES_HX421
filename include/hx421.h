@@ -46,7 +46,8 @@ extern "C" {
 
 /* ---- ABI version (explicit — not a reserved-pad zero-check) ------------- */
 #define HX421_ABI_VERSION_MAJOR 1u
-#define HX421_ABI_VERSION_MINOR 0u   /* bump MINOR for additive fields/functions */
+#define HX421_ABI_VERSION_MINOR 1u   /* bump MINOR for additive fields/functions */
+                                     /* 1.1: + hx421_cart_write (SNES->cart mailbox) */
 #define HX421_ABI_VERSION \
     (((uint32_t)HX421_ABI_VERSION_MAJOR << 16) | (uint32_t)HX421_ABI_VERSION_MINOR)
 
@@ -55,6 +56,22 @@ extern "C" {
 #define HX421_AUDIO_RATE_HZ         44100u        /* master/487; mixer pinned here */
 #define HX421_AUDIO_BYTES_PER_FRAME 4u            /* interleaved stereo int16 */
 #define HX421_MAX_PADS              4u
+
+/* ---- SNES -> cart mailbox ----------------------------------------------
+ * The cart bus is read-only BY CHOICE, not by hardware limit — cart writes
+ * are how save SRAM and every enhancement chip receive data. This region is
+ * the one writable window: the 65816 stores payloads here (joypad state,
+ * command blocks) and the coprocessor reads them. Everything outside it
+ * stays read-only, so a runaway game cannot corrupt staging or the kernel
+ * image at $8000+.
+ *
+ * Writing the DOORBELL byte signals "payload complete" — so the coprocessor
+ * acts on a whole block rather than polling for a half-written one. Pure
+ * SIGNALS (no payload) stay address-strobes, as HX_FRAME_DONE already is. */
+#define HX421_MB_BASE      0x7000u   /* 256 B writable window            */
+#define HX421_MB_BYTES     0x0100u
+#define HX421_MB_DOORBELL  0x70FFu   /* write here = payload complete    */
+#define HX421_MB_JOYPADS   0x7000u   /* 8 B: 4 ports x 16-bit pad word   */
 
 /* rom_select */
 enum {
@@ -155,6 +172,15 @@ HX421_API uint32_t    hx421_fft_bands(uint32_t *out, uint32_t n);
 /* SNES auto-joypad word layout: B Y Sel Start Up Dn Lt Rt A X L R (+ type sig). */
 HX421_API void        hx421_post_joypads(const uint16_t pads[HX421_MAX_PADS]);
 HX421_API void        hx421_post_mouse(int dx, int dy, unsigned buttons); /* bit0 L, bit1 R */
+
+/* ---- SNES -> cart writes ------------------------------------------------
+ * Call for every SNES write landing in the cart's mapped range. Writes
+ * OUTSIDE the mailbox window are ignored (the rest of the bus is read-only),
+ * so the host may forward everything without filtering. Writing
+ * HX421_MB_DOORBELL marks the payload complete and lets the coprocessor act
+ * on it. Added in ABI 1.1; resolve it optionally so an older host degrades
+ * to read-only rather than failing to load. */
+HX421_API void        hx421_cart_write(uint32_t addr, uint8_t data);
 
 /* Overlay-cursor travel limits, inclusive, in screen pixels, addressing the
  * sprite's TOP-LEFT corner. Defaults (8,240,8,208) hold an 8x8 cursor exactly

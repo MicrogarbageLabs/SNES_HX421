@@ -2225,6 +2225,43 @@ HX421_API void hx421_post_mouse(int dx, int dy, unsigned buttons) {
     g_mouse_dx += dx; g_mouse_dy += dy; g_mouse_btn = buttons;
 }
 
+/* ---- SNES -> cart mailbox ---------------------------------------------- */
+
+static uint64_t g_mb_writes;      /* total accepted mailbox writes          */
+static uint64_t g_mb_rings;       /* doorbell strobes                       */
+static uint64_t g_mb_rejected;    /* writes outside the window (read-only)  */
+static uint16_t g_mb_pads[HX421_MAX_PADS];   /* last joypad block received  */
+
+/* Called on the doorbell write: the payload is complete, act on it. Runs on
+ * the SNES's clock (inside a cart write), so keep it short — anything heavy
+ * belongs in the next hx421_step. */
+static void hx_mailbox_doorbell(void) {
+    g_mb_rings++;
+    const uint8_t *mb = &g_window[HX421_MB_JOYPADS];
+    for (unsigned i = 0; i < HX421_MAX_PADS; ++i)
+        g_mb_pads[i] = (uint16_t)(mb[i * 2] | ((uint16_t)mb[i * 2 + 1] << 8));
+
+    if (g_mb_rings <= 3 || (g_mb_rings % 300u) == 0u) {
+        fprintf(stderr, "hx421 mb: ring #%llu  pads=%04X %04X %04X %04X  "
+                        "(writes=%llu, rejected=%llu)\n",
+                (unsigned long long)g_mb_rings,
+                g_mb_pads[0], g_mb_pads[1], g_mb_pads[2], g_mb_pads[3],
+                (unsigned long long)g_mb_writes, (unsigned long long)g_mb_rejected);
+        fflush(stderr);
+    }
+}
+
+HX421_API void hx421_cart_write(uint32_t addr, uint8_t data) {
+    const uint32_t a = addr & 0xFFFFu;      /* same 64 KB window as cart_read */
+    if (a < HX421_MB_BASE || a >= HX421_MB_BASE + HX421_MB_BYTES) {
+        g_mb_rejected++;                    /* rest of the cart is read-only */
+        return;
+    }
+    g_window[a] = data;
+    g_mb_writes++;
+    if (a == HX421_MB_DOORBELL) hx_mailbox_doorbell();
+}
+
 HX421_API void hx421_cursor_set_clamp(int left, int right, int top, int bottom) {
     if (right < left) { int t = left; left = right; right = t; }
     if (bottom < top) { int t = top;  top = bottom; bottom = t; }

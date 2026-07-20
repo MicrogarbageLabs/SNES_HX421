@@ -181,8 +181,10 @@
     stz VTIMEH
     lda #$0F
     sta INIDISP                 ; visible until the DLL drives the letterbox
-    lda #$10
-    sta NMITIMEN                ; free-running H-IRQ armed
+    lda #$11
+    sta NMITIMEN                ; free-running H-IRQ armed + AUTO-JOYPAD (b0)
+                                ; auto-joypad latches the pads during vblank;
+                                ; the mailbox push at V=PAD_LINE reads them.
     cli
 
 @hang:
@@ -248,6 +250,7 @@
     cmp K_VIS_END               ; carry set if V.lo >= VIS_END
     bcs @ge_vis
     stz K_FRAME_ARMED           ; V < VIS_END: visible/top region -> re-arm
+    stz K_PAD_DONE              ; and re-arm the once-per-frame mailbox push
     bra @dispatch
 @ge_vis:
     lda K_FRAME_ARMED
@@ -265,6 +268,42 @@
     sta K_SIPHON_SRC
     sep #$20
     .a8
+
+    ; --- SNES -> cart mailbox: push joypad state once per frame -------
+    ; At PAD_LINE (well past vblank's start) auto-joypad has finished, so
+    ; $4218.. hold this frame's pads. Write them into the cart's writable
+    ; mailbox window and ring the doorbell so the coprocessor acts on a
+    ; complete block rather than a half-written one.
+    ;
+    ; The cart bus is read-only EVERYWHERE ELSE; the coprocessor ignores
+    ; writes outside the mailbox, so a stray store cannot corrupt staging
+    ; or the kernel image.
+    cpy #PAD_LINE
+    bne @no_pads
+    lda K_PAD_DONE
+    bne @no_pads
+    lda #$01
+    sta K_PAD_DONE
+    rep #$20
+    .a16
+    ; All four auto-joypad words. $4218/$421A are the primary data line of
+    ; ports 1 and 2; $421C/$421E are each port's SECOND data line, which is
+    ; where a multitap presents additional controllers. Reading all four is
+    ; free, so do it unconditionally and let the host decide what is plugged
+    ; in. (Note: a Super Multitap's full 5-controller protocol needs manual
+    ; $4016 strobing — auto-joypad only ever yields these four words.)
+    lda JOY1L                   ; port 1, data line 1 (BYsS udlr AXLR ....)
+    sta f:HX_MB_JOYPADS_L
+    lda JOY2L                   ; port 2, data line 1
+    sta f:HX_MB_JOYPADS_L+2
+    lda JOY3L                   ; port 1, data line 2 (multitap)
+    sta f:HX_MB_JOYPADS_L+4
+    lda JOY4L                   ; port 2, data line 2 (multitap)
+    sta f:HX_MB_JOYPADS_L+6
+    sep #$20
+    .a8
+    sta f:HX_MB_DOORBELL_L      ; any value — the ACCESS is the signal
+@no_pads:
 
 @dispatch:
     lda [K_FRONT_PTR],y         ; action = front action_table[V]

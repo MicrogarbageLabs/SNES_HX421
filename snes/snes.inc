@@ -62,6 +62,10 @@ VTIMEH    = $420A      ; V-counter IRQ target high byte (bit 0)
 RDNMI     = $4210      ; read to ack NMI (b7 = vblank flag)
 TIMEUP    = $4211      ; read to acknowledge an H/V-timer IRQ
 HVBJOY    = $4212      ; b7 vblank, b0 auto-joypad busy
+JOY1L     = $4218      ; auto-joypad results, port 1 (16-bit at $4218/$4219)
+JOY2L     = $421A      ; port 2
+JOY3L     = $421C
+JOY4L     = $421E
 MDMAEN    = $420B      ; general-DMA enable (1 bit per channel)
 HDMAEN    = $420C      ; HDMA enable (1 bit per channel)
 

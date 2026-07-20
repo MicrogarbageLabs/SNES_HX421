@@ -117,6 +117,23 @@ HX_FRAME_DONE       = $79C1     ; SNES read-strobe: walked the last DMA slot;
 HX_FRAME_READY_L    = (HX421_BANK << 16) | HX_FRAME_READY
 HX_FRAME_DONE_L     = (HX421_BANK << 16) | HX_FRAME_DONE
 
+; --- SNES -> cart mailbox (the ONE writable window) --------------------
+; The cart bus is read-only by design everywhere else; the coprocessor
+; ignores writes outside this range, so a stray store cannot corrupt the
+; staging buffers or the kernel image at $8000+. Payloads (joypad state,
+; command blocks) go here; pure signals stay read-strobes like FRAME_DONE.
+; Writing DOORBELL means "payload complete" — so the coprocessor acts on a
+; whole block instead of polling a half-written one.
+HX_MB_BASE          = $7000     ; 256 B writable
+HX_MB_JOYPADS       = $7000     ; 8 B: 4 ports x 16-bit pad word
+HX_MB_DOORBELL      = $70FF     ; write = payload complete
+HX_MB_JOYPADS_L     = (HX421_BANK << 16) | HX_MB_JOYPADS
+HX_MB_DOORBELL_L    = (HX421_BANK << 16) | HX_MB_DOORBELL
+
+; Scanline at which the kernel pushes the pads. Auto-joypad latches early in
+; vblank (~225) and takes ~3 lines, so 230 is safely after it completes.
+PAD_LINE            = 230
+
 ; ============================================================
 ;  Kernel WRAM working set (bank $00 low RAM)
 ; ============================================================
@@ -140,3 +157,4 @@ K_SIPHON_BPL        = $0218     ; 16-bit: cached bytes/line (0 = siphon off)
 K_SIPHON_VRAM       = $021A     ; 16-bit: cached VRAM word dst (set once/frame)
 K_SIPHON_SRC_BASE   = $021C     ; 16-bit: cached source base (re-seeds the cursor)
 K_SIPHON_SRC        = $021E     ; 16-bit: running source cursor (advances per line)
+K_PAD_DONE          = $0220     ; 1 once this frame's mailbox pad push ran

@@ -49,7 +49,9 @@ public:
   bool is_loaded() const { return dll_handle != nullptr; }
 
   // Memory interface — the bus calls this for any address in our mapped
-  // HiROM ranges. Cart bus is read-only; write is a no-op.
+  // HiROM ranges. Reads pull from the DLL's window. Writes are forwarded
+  // to the DLL, which accepts only the mailbox window and ignores the rest
+  // (so the cart stays effectively read-only outside it).
   uint8 read(unsigned addr);
   void  write(unsigned addr, uint8 data);
   unsigned size() const;
@@ -70,6 +72,7 @@ private:
   uint32_t    (*p_audio_pull)(int16_t *, uint32_t);
   void        (*p_post_joypads)(const uint16_t *);
   void        (*p_post_mouse)(int, int, unsigned);   // optional export
+  void        (*p_cart_write)(uint32_t, uint8_t);    // optional export (ABI 1.1+)
   int32_t     (*p_audio_command)(const Hx421AudioCmd *);   // HX421 cmd (optional export)
   void        (*p_cart_reset_begin)();
   int         (*p_cart_reset_ready)();
