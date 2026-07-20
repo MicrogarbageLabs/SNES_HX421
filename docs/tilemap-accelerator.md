@@ -104,6 +104,28 @@ DMA is not the constraint; **VRAM is**. Note Mode 1 (BG1/BG2 4bpp + BG3 2bpp) of
 better than four 2bpp layers — 15 colours on the layers carrying artwork usually beats a fourth
 3-colour parallax band. The accelerator does not care which mode is chosen.
 
+## CHR is RESIDENT, not streamed
+
+The accelerator moves **tilemap entries only**. Tile graphics live in VRAM for the duration of
+an area and are replaced in bulk on an area transition — during a fade or forced blank, where
+throughput does not matter.
+
+Per-tile CHR streaming was considered and rejected. It would need a VRAM slot allocator,
+reference counting per tile, and tilemap entries rewritten whenever a tile relocated — a lot of
+machinery to solve a problem metatiles already avoid, since heavy tile reuse means a modest set
+covers a large map:
+
+```
+512 tiles 4bpp   16 KB      2 tilemaps @64x32    8 KB
+                            sprites, spare      ~8 KB
+                            ------------------------
+                            ~32 KB of 64 KB VRAM
+```
+
+If an area ever needs more tiles than fit, the answer is to split it into sub-areas with their
+own tile sets — a load-time decision, not a per-frame one. PSRAM holds every area's set, so a
+swap is a bulk transfer, not a stream.
+
 ## Torus vs bounded maps
 
 `Hx421MapLayer.wrap` selects: set, coordinates wrap modulo the map and a camera may advance
