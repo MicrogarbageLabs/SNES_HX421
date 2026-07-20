@@ -27,6 +27,8 @@
 #include <stdlib.h>
 
 #include "hx421_metatile.h"
+#include "hx421_raster.h"
+#include "hx421_scene3d.h"
 
 /* ---- singleton runtime state (the ABI is a single instance, like mgapi) --- */
 static HxaService *g_svc;
@@ -1427,6 +1429,14 @@ static int      g_pll_log;           /* feeds since the last A/V diagnostic line
 static int32_t  g_lead_ema_q8;       /* EMA of the fed-rendered lead in ms (q8)           */
 static int      g_ema_seeded;        /* 1 once the EMA has taken its first real sample    */
 static uint32_t g_audio_dropped;     /* frames refused by a full ring (audio runs early)  */
+
+/* 3D (TBDR) producer — defined with the other frame producers further down,
+ * declared here because hx421_init selects the mode. */
+static int  g_r3d_mode;              /* HX421_3D=1: run the TBDR pipeline */
+static int  g_r3d_kicked;
+static void hx_r3d_init(void);
+static void hx_produce_r3d_burst(void);
+static void hx_r3d_advance(void);    /* called on FRAME_DONE */
 static uint32_t g_fmv_stalls;        /* video frames REPEATED because the FIFO underran.  */
                                      /* Each one loses 67 ms of picture time while audio  */
                                      /* keeps streaming = permanent audio lead. Cumulative.*/
@@ -1598,6 +1608,8 @@ HX421_API int hx421_init(const Hx421Config *cfg) {
     g_cmd_mode    = (getenv("HX421_CMD") != NULL);
     g_fmv_mode    = (getenv("HX421_FMV") != NULL);   /* FMV band pipeline */
     g_map_mode    = (!g_fmv_mode && getenv("HX421_MAP") != NULL);  /* scrolling map */
+    g_r3d_mode    = (!g_fmv_mode && !g_map_mode && getenv("HX421_3D") != NULL);
+    if (g_r3d_mode) hx_r3d_init();
     if (g_map_mode) {
         g_map_area = 0;
         hx_map_build_assets();
@@ -1806,6 +1818,11 @@ HX421_API uint8_t hx421_cart_read(uint32_t addr) {
              * fix for the just-in-time-staging judder: production no longer rides
              * hx421_step's audio-sample phase, which drifts vs the SNES frame. */
             hx_produce_fmv_band();
+        } else if (g_r3d_mode) {
+            /* Same SNES-clock pacing as FMV: advance the burst, then stage the
+             * next one so it is resident before the coming VIS_END. */
+            hx_r3d_advance();
+            hx_produce_r3d_burst();
         } else if (g_map_mode) {
             hx_produce_map_frame();                    /* SNES-clock paced, as FMV */
         } else {
@@ -1944,6 +1961,243 @@ static void hx_produce_fmv_band(void) {
     }
 }
 
+/* ======================= 3D (TBDR) frame production ====================
+ *
+ * The TBDR wired into the same staging seam the FMV uses, because the shape is
+ * identical: a frame's CHR is too big for one vblank, so it streams into the
+ * hidden buffer over several bursts and the tilemap + CHR base flip together
+ * after the last one. Nothing is shown half-built.
+ *
+ * The ONE difference from FMV is that the burst count is not fixed at 4 — it
+ * comes from how many tiles the frame actually needed. A simple scene lands in
+ * one burst and runs at 60 Hz; a dense one takes four and runs at 15. That is
+ * the "complexity costs TIME, not detail" mechanism: the pool is sized for a
+ * full screen, so the renderer never degrades to fit a budget.
+ *
+ * VRAM layout is shared with FMV verbatim (CHR A at word 0, B at 12288,
+ * tilemaps at 0x7C00/0x7800), so the same BG1SC/BG12NBA constants flip it.
+ * Pool check: 16 solid + 750 dynamic = 766 tiles x 16 words = 12256 words,
+ * which clears CHR base B at 12288 with 32 words to spare.
+ */
+
+#define R3D_TILES_W        30u
+#define R3D_TILES_H        25u
+#define R3D_TOP_LB         12u        /* (224 - 200) / 2                     */
+#define R3D_VIS_END        (R3D_TOP_LB + R3D_TILES_H * 8u)   /* 212          */
+
+#define R3D_OFF_TILEMAP    0x0400u    /* 2048 B: 32x32 map words             */
+#define R3D_OFF_SOLID      0x0C00u    /*  512 B: the 16 resident tiles       */
+#define R3D_OFF_CGRAM      0x0E00u    /*   32 B: BG palette 0                */
+#define R3D_OFF_CHR        0x0E40u    /* this burst's CHR chunk              */
+
+/* Per-burst DMA budget. Burst 0 also carries the tilemap, the solid tiles and
+ * the palette, so its CHR allowance is smaller — the totals are what the vblank
+ * sees, and they must match or the first burst overruns while the rest idle. */
+#define R3D_BURST_BYTES    6144u
+#define R3D_FIXED_BYTES    (2048u + 512u + 32u)              /* 2592         */
+
+/* Runtime-overridable via HX421_3D_BURST. The demo scene costs ~3 KB, so at the
+ * real budget it always lands in ONE burst and the multi-burst staging — the
+ * part that can actually tear — never executes. Shrinking the budget forces the
+ * frame across several bursts on the same geometry, which is the only way to
+ * exercise the flip without authoring a scene heavy enough to need it. */
+static uint32_t g_r3d_burst_bytes = R3D_BURST_BYTES;
+#define R3D_CHR0_BYTES     (g_r3d_burst_bytes - R3D_FIXED_BYTES)
+
+static int             g_r3d_burst;      /* current burst within this frame   */
+static unsigned        g_r3d_bursts;     /* bursts this frame needs           */
+static int             g_r3d_front;      /* displayed CHR buffer: 0=A, 1=B    */
+static uint32_t        g_r3d_frame;      /* animation clock                   */
+static Hx421Scene      g_r3d_scene;
+static Hx421RenderOut  g_r3d_out;
+static Hx421Tri        g_r3d_tris[HX421_MAX_TRIS];
+static uint8_t         g_r3d_solid[16 * 32];
+static int             g_r3d_obj[3];
+
+/* Unit cube, 12 triangles, a distinct colour index per face pair so the solid
+ * classifier has something to actually classify. */
+#define R3D_U 65536
+static const Hx421Vec r3d_cube_v[8] = {
+    {-R3D_U,-R3D_U,-R3D_U},{ R3D_U,-R3D_U,-R3D_U},{ R3D_U, R3D_U,-R3D_U},{-R3D_U, R3D_U,-R3D_U},
+    {-R3D_U,-R3D_U, R3D_U},{ R3D_U,-R3D_U, R3D_U},{ R3D_U, R3D_U, R3D_U},{-R3D_U, R3D_U, R3D_U},
+};
+static const uint16_t r3d_cube_f[36] = {
+    0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
+    3,2,6, 3,6,7,  0,3,7, 0,7,4,  1,5,6, 1,6,2,
+};
+static const uint8_t r3d_cube_c[12] = { 2,2, 3,3, 4,4, 5,5, 6,6, 7,7 };
+
+static void r3d_pal_entry(uint8_t *cg, int idx, int r, int g, int b) {
+    uint16_t v = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
+    cg[idx * 2] = (uint8_t)v; cg[idx * 2 + 1] = (uint8_t)(v >> 8);
+}
+
+static void hx_r3d_init(void) {
+    g_r3d_burst = 0; g_r3d_front = 0; g_r3d_kicked = 0;
+    g_r3d_frame = 0; g_r3d_bursts = 1;
+    const char *bb = getenv("HX421_3D_BURST");
+    if (bb) {
+        long v = strtol(bb, NULL, 0);
+        /* Must exceed the fixed payload or burst 0 has no CHR allowance and the
+         * frame never completes; cap at what one window buffer can hold. */
+        if (v > (long)R3D_FIXED_BYTES + 256 && v <= 8192) g_r3d_burst_bytes = (uint32_t)v;
+        else fprintf(stderr, "hx421 3d: ignoring HX421_3D_BURST=%s (want %u..8192)\n",
+                     bb, R3D_FIXED_BYTES + 257u);
+    }
+    hx421_scene_init(&g_r3d_scene);
+    Hx421Mesh cube;
+    cube.verts = r3d_cube_v; cube.vcount = 8;
+    cube.faces = r3d_cube_f; cube.colors = r3d_cube_c; cube.fcount = 12;
+    cube.radius = 113512;                          /* sqrt(3) in Q16.16 */
+    int mid = hx421_mesh_register(&g_r3d_scene, &cube);
+
+    /* three instances of ONE mesh — the registry's whole point */
+    static const int32_t xs[3] = { -3, 0, 3 };
+    for (int i = 0; i < 3; ++i) {
+        g_r3d_obj[i] = hx421_object_spawn(&g_r3d_scene, mid);
+        Hx421Vec p = { xs[i] * 65536, 0, 0 };
+        hx421_object_set_pos(&g_r3d_scene, g_r3d_obj[i], p);
+    }
+    /* focal is in PIXELS: 120 on a 240-wide screen is a 90-degree FOV. */
+    Hx421Vec cpos = { 0, 0, -7 * 65536 };
+    int cam = hx421_camera_register(&g_r3d_scene, cpos, 120 * 65536);
+    hx421_camera_set_active(&g_r3d_scene, cam);
+
+    hx421_build_solid_tiles(g_r3d_solid);
+
+    fprintf(stderr, "hx421 3d: TBDR demo — %ux%u px (%ux%u tiles), pool %u slots, "
+                    "%u B/burst (burst 0 carries %u B of fixed payload); "
+                    "frame rate follows scene complexity\n",
+            R3D_TILES_W * 8u, R3D_TILES_H * 8u, R3D_TILES_W, R3D_TILES_H,
+            HX421_DYN_SLOTS, g_r3d_burst_bytes, R3D_FIXED_BYTES);
+    fflush(stderr);
+}
+
+/* One burst was DMA'd. Step to the next; wrapping past the last means the
+ * display just flipped to what we were filling, so the buffers swap roles. */
+static void hx_r3d_advance(void) {
+    g_r3d_burst++;
+    if (g_r3d_burst >= (int)g_r3d_bursts) {
+        g_r3d_burst = 0;
+        g_r3d_front ^= 1;            /* the last burst flipped display to back */
+    }
+}
+
+/* Animate, transform, rasterise. Called once per FRAME, not per burst. */
+static void hx_r3d_build_frame(void) {
+    /* relative commands: no accumulated angle for the caller to track */
+    for (int i = 0; i < 3; ++i)
+        hx421_object_rotate(&g_r3d_scene, g_r3d_obj[i], 3 + i, 2, 0);
+
+    /* the middle cube faces the outer left one, exercising point_at */
+    Hx421Vec tgt = g_r3d_scene.obj[g_r3d_obj[0]].pos;
+    hx421_object_point_at(&g_r3d_scene, g_r3d_obj[1], tgt, 1);
+
+    int n = hx421_scene_render(&g_r3d_scene, g_r3d_tris, HX421_MAX_TRIS,
+                               (int)(R3D_TILES_W * 8), (int)(R3D_TILES_H * 8));
+    hx421_render_frame(g_r3d_tris, n, (int)R3D_TILES_W, (int)R3D_TILES_H, 0,
+                       &g_r3d_out);
+
+    /* Burst count from what the frame ACTUALLY cost. Burst 0 carries the fixed
+     * payload, so its CHR share is short by R3D_FIXED_BYTES. */
+    uint32_t chr = (uint32_t)g_r3d_out.used * 32u;
+    if (chr <= R3D_CHR0_BYTES) g_r3d_bursts = 1;
+    else g_r3d_bursts = 1 + (chr - R3D_CHR0_BYTES + g_r3d_burst_bytes - 1) / g_r3d_burst_bytes;
+    g_r3d_frame++;
+}
+
+/* Byte range of burst `i` within this frame's dynamic CHR. */
+static void hx_r3d_chunk(int i, uint32_t *off, uint32_t *len) {
+    uint32_t total = (uint32_t)g_r3d_out.used * 32u;
+    uint32_t start = (i == 0) ? 0u : R3D_CHR0_BYTES + (uint32_t)(i - 1) * g_r3d_burst_bytes;
+    uint32_t cap   = (i == 0) ? R3D_CHR0_BYTES : g_r3d_burst_bytes;
+    if (start >= total) { *off = 0; *len = 0; return; }
+    uint32_t n = total - start;
+    *off = start;
+    *len = (n > cap) ? cap : n;
+}
+
+static void hx_emit_r3d_burst(uint32_t base, int burst, uint32_t chr_off, uint32_t chr_len,
+                              uint16_t back_chr, uint16_t back_tm,
+                              uint8_t back_sc, uint8_t back_nba,
+                              uint8_t front_sc, uint8_t front_nba) {
+    uint8_t *c = &g_window[base + HX_OFF_DMABODY];
+    size_t p = 0;
+    e_lda_sta8(c, &p, 0xC0u, HW_A1B0);                 /* A-bus bank = $C0 */
+    if (burst == 0) {
+        e_bg_setup(c, &p);
+        e_lda_sta8(c, &p, front_sc,  0x2107u);         /* hold the FRONT frame up */
+        e_lda_sta8(c, &p, front_nba, 0x210Bu);
+        /* Fixed payload into the BACK buffer: whole tilemap, the 16 resident
+         * tiles, the palette. Safe to land early — nothing displays it until
+         * the flip on the last burst. */
+        e_dma_vram_slot(c, &p, (uint16_t)(base + R3D_OFF_TILEMAP), 2048u, back_tm);
+        e_dma_vram_slot(c, &p, (uint16_t)(base + R3D_OFF_SOLID), 512u, back_chr);
+        e_dma_cgram_slot(c, &p, (uint16_t)(base + R3D_OFF_CGRAM), 32u, 0x00);
+    }
+    if (chr_len)
+        e_dma_vram_slot(c, &p, (uint16_t)(base + R3D_OFF_CHR), (uint16_t)chr_len,
+                        (uint16_t)(back_chr + HX421_DYN_BASE * 16u + chr_off / 2u));
+    if (burst == (int)g_r3d_bursts - 1) {
+        e_lda_sta8(c, &p, back_sc,  0x2107u);          /* FLIP tilemap -> back */
+        e_lda_sta8(c, &p, back_nba, 0x210Bu);          /* FLIP CHR -> back */
+    }
+    e8(c, &p, 0x6B);                                   /* rtl */
+}
+
+static void hx_produce_r3d_burst(void) {
+    if (!g_rom_loaded) return;
+    uint32_t base = g_back ? HX_BUF1_BASE : HX_BUF0_BASE;
+
+    if (g_r3d_burst == 0) hx_r3d_build_frame();
+
+    uint16_t back_chr  = g_r3d_front ? FMV_CHR_A_VWORD : FMV_CHR_B_VWORD;
+    uint16_t back_tm   = g_r3d_front ? FMV_TM_A_VWORD  : FMV_TM_B_VWORD;
+    uint8_t  back_sc   = g_r3d_front ? FMV_BG1SC_A     : FMV_BG1SC_B;
+    uint8_t  back_nba  = g_r3d_front ? FMV_BG12NBA_A   : FMV_BG12NBA_B;
+    uint8_t  front_sc  = g_r3d_front ? FMV_BG1SC_B     : FMV_BG1SC_A;
+    uint8_t  front_nba = g_r3d_front ? FMV_BG12NBA_B   : FMV_BG12NBA_A;
+
+    uint8_t *act = &g_window[base + HX_OFF_ACTION];
+    memset(act, 0, 512);
+    for (unsigned v = 0; v < R3D_TOP_LB; ++v) act[v] = 1;
+    act[R3D_TOP_LB] = 2;
+    for (unsigned v = R3D_VIS_END; v < 262; ++v) act[v] = 1;
+    g_window[base + HX_OFF_HDR_TOP_LB]  = (uint8_t)R3D_TOP_LB;
+    g_window[base + HX_OFF_HDR_VIS_END] = (uint8_t)R3D_VIS_END;
+    g_window[base + HX_OFF_SIP_BPL + 0] = 0;             /* siphon off */
+    g_window[base + HX_OFF_SIP_BPL + 1] = 0;
+
+    if (g_r3d_burst == 0) {
+        memcpy(&g_window[base + R3D_OFF_TILEMAP], g_r3d_out.tilemap, 2048);
+        memcpy(&g_window[base + R3D_OFF_SOLID],   g_r3d_solid, sizeof g_r3d_solid);
+        uint8_t *cg = &g_window[base + R3D_OFF_CGRAM];
+        memset(cg, 0, 32);
+        r3d_pal_entry(cg,  1,  40,  40,  56);            /* 1 = background     */
+        for (int i = 2; i < 8; ++i) {                    /* 2..7 = cube faces  */
+            int t = (i - 2) * 40;
+            r3d_pal_entry(cg, i, 90 + t, 70 + (t >> 1), 200 - t);
+        }
+    }
+    uint32_t off, len;
+    hx_r3d_chunk(g_r3d_burst, &off, &len);
+    if (len) memcpy(&g_window[base + R3D_OFF_CHR], &g_r3d_out.chr[off], len);
+
+    hx_emit_r3d_burst(base, g_r3d_burst, off, len, back_chr, back_tm,
+                      back_sc, back_nba, front_sc, front_nba);
+    g_window[HX_FRAME_READY_ADDR] = (uint8_t)(g_back + 1);
+    g_frames_made++;
+    if (!g_m2_logged_first) {
+        g_m2_logged_first = 1;
+        fprintf(stderr, "hx421 3d: first burst produced (back=buf%d) — %u tiles "
+                "(%u empty, %u solid, %u mixed, %u degraded) -> %u bursts, ~%u fps\n",
+                g_back, g_r3d_out.used, g_r3d_out.n_empty, g_r3d_out.n_solid,
+                g_r3d_out.n_mixed, g_r3d_out.n_degraded, g_r3d_bursts,
+                60u / (g_r3d_bursts ? g_r3d_bursts : 1u));
+        fflush(stderr);
+    }
+}
+
 /* ============================ M2 frame production ====================== */
 
 /* Build one frame into the BACK buffer of the served window: the per-line
@@ -2045,6 +2299,8 @@ HX421_API void hx421_step(uint64_t elapsed_ns) {
      * band once so the very first VIS_END has something to latch. */
     if (g_fmv_mode) {
         if (!g_fmv_kicked) { g_fmv_kicked = 1; hx_produce_fmv_band(); }
+    } else if (g_r3d_mode) {
+        if (!g_r3d_kicked) { g_r3d_kicked = 1; hx_produce_r3d_burst(); }
     } else if (g_map_mode) {
         if (g_map_frames == 0) hx_produce_map_frame();   /* kick; then FRAME_DONE paced */
     } else {

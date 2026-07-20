@@ -39,8 +39,16 @@ param(
                            # Proves the edge-seam win: after the seed frames the
                            # tilemap costs <=128 B/frame instead of 2048.
     [switch]$Fmv,          # set $HX421_FMV=1: run the FMV band pipeline (needs -Kernel)
-    [string]$FmvFile       # a real .fmv (FMV2) to stream; omit for the synthetic
+    [string]$FmvFile,      # a real .fmv (FMV2) to stream; omit for the synthetic
                            # scrolling source. Implies -Fmv. Audio+video interleaved.
+    [switch]$ThreeD,       # set $HX421_3D=1: the TBDR renderer (needs -Kernel).
+                           # Frame rate follows scene complexity: the CHR streams
+                           # over N vblank bursts and the tilemap + CHR base flip
+                           # together after the last one, so nothing half-built shows.
+    [int]$ThreeDBurst      # override the per-burst CHR budget ($HX421_3D_BURST).
+                           # The demo scene fits ONE burst at the real 6144 B, so
+                           # the multi-burst flip never runs; drop this to ~3000 to
+                           # force it across bursts and actually exercise that path.
 )
 
 $ErrorActionPreference = "Stop"
@@ -111,6 +119,25 @@ if ($Fmv -or $FmvFile) {
 } else {
     Remove-Item Env:\HX421_FMV -ErrorAction SilentlyContinue
     Remove-Item Env:\HX421_FMV_FILE -ErrorAction SilentlyContinue
+}
+
+# Optional: the TBDR 3D renderer. Three instances of one cube mesh through the
+# shared object registry, rasterised to SNES CHR tiles and staged over as many
+# vblank bursts as the frame's tile count needs.
+if ($ThreeD) {
+    if (-not $Kernel) { Die "-ThreeD needs -Kernel (the video kernel serves the bursts)" }
+    if ($Map -or $Fmv -or $FmvFile) { Die "-ThreeD is mutually exclusive with -Map and -Fmv" }
+    $env:HX421_3D = "1"
+    Write-Step "HX421_3D=1, TBDR renderer (frame rate follows scene complexity)"
+    if ($ThreeDBurst -gt 0) {
+        $env:HX421_3D_BURST = "$ThreeDBurst"
+        Write-Step "HX421_3D_BURST=$ThreeDBurst B/burst (forces the multi-burst flip path)"
+    } else {
+        Remove-Item Env:\HX421_3D_BURST -ErrorAction SilentlyContinue
+    }
+} else {
+    Remove-Item Env:\HX421_3D -ErrorAction SilentlyContinue
+    Remove-Item Env:\HX421_3D_BURST -ErrorAction SilentlyContinue
 }
 
 # Repo root = parent of the dir holding this script (SNES_HX_421).
