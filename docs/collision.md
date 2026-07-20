@@ -151,14 +151,57 @@ busy frame that is a few hundred operations — beneath measurement.
 
 Return the **first set bit's position** as well as the boolean: that gives a contact point for
 spawning impact effects, which AABB collision cannot provide and which is most of why per-pixel
-looks better.
+looks better. It is free — the row scan already found it — but only if the API carries it out;
+retrofitting a position onto a boolean means re-running the test.
+
+Scanning order decides which contact you get. Top-left-first is the natural fall-out and is fine
+for impacts; if a projectile wants the contact nearest its travel direction, scan rows in the
+direction of motion instead. Worth fixing the convention early, since it is invisible until
+effects start spawning on the wrong side of a hit.
 
 ### Masks are DERIVED, never authored
 
-Generate them in the asset pipeline from the sprite's own CHR — any non-zero (non-transparent)
-pixel becomes a 1. Hand-authored masks drift from the art the moment a sprite is redrawn, and the
-resulting bug is "hits register slightly off the picture", which is maddening to trace back to an
-asset. Deriving them makes drift impossible.
+Any non-zero (non-transparent) pixel becomes a 1. Hand-authored masks drift from the art the moment
+a sprite is redrawn, and the resulting bug is "hits register slightly off the picture", which is
+maddening to trace back to an asset. Deriving them makes drift impossible.
+
+**`derive_mask` runs per ACTOR, at PSRAM stage time — not per sprite and not per frame.** An actor
+is usually several OAM sprites (a 48x64 character might be six 16x32s), and testing each separately
+would mean N tests and N results to reconcile. Instead, when the actor's CHR is staged into PSRAM,
+walk its constituent sprites and composite them into ONE mask over the actor's bounding box, at
+their OAM-relative offsets. One entry, one test, one answer.
+
+```
+load actor -> stage CHR to PSRAM -> derive_mask(actor) -> mask in PSRAM
+                                                       -> pulled to BRAM on spawn
+```
+
+Because it happens at load, the cost is irrelevant: a full 64x64 actor is 4096 pixel tests once,
+against nothing per frame.
+
+### Variable mask sizes
+
+SNES sprites come in size pairs (8x8/16x16/32x32/64x64, plus the 16x32 and 32x64 variants), and an
+actor's bounding box is whatever its sprites span. So a mask carries its own dimensions rather than
+assuming one size:
+
+```
+size     rows x bytes/row      mask
+8x8       8 x 1                  8 B
+16x16    16 x 2                 32 B
+16x32    32 x 2                 64 B
+32x32    32 x 4                128 B
+32x64    64 x 4                256 B
+64x64    64 x 8                512 B
+```
+
+Rows are padded to whole bytes and the width is stored, so an odd actor size (say 48 wide) costs
+6 B/row rather than being rounded to 64. A **uniform 64-wide row** would simplify the shifter but
+waste 8x on small sprites — 64 actors at 64x64 uniform is 32 KB, well past what BRAM should hold —
+so natural width is the right trade, and the shifter handles 1/2/4/8-byte rows.
+
+Widths up to 64 fit a single 64-bit row accumulator, which covers every SNES sprite size and most
+actors. Wider actors need multi-word rows; worth deferring until something actually needs one.
 
 ### Shares the registry
 
