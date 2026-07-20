@@ -238,42 +238,16 @@
     sep #$20
     .a8
 
-    ; --- once-per-frame prep at the V >= VIS_END crossing -------------
-    ; When V reaches the bottom letterbox (V >= VIS_END) the visible region
-    ; is done: latch the staged front buffer + arm the bulk DMA walk so the
-    ; big blank window (bottom LB + vblank + top LB, ~70 lines) DMAs the
-    ; frame, resident well before the unblank at V=top_lb. Gated to once
-    ; per frame by K_FRAME_ARMED (cleared while V < VIS_END).
-    lda K_VHI
-    bne @ge_vis                 ; V >= 256 -> past VIS_END for sure
-    lda K_VLO
-    cmp K_VIS_END               ; carry set if V.lo >= VIS_END
-    bcs @ge_vis
-    stz K_FRAME_ARMED           ; V < VIS_END: visible/top region -> re-arm
-    stz K_PAD_DONE              ; and re-arm the once-per-frame mailbox push
-    bra @dispatch
-@ge_vis:
-    lda K_FRAME_ARMED
-    bne @dispatch               ; already prepped this frame
-    lda #$01
-    sta K_FRAME_ARMED
-    jsr frame_prep              ; latch front + cache descriptors + arm walk (keeps Y)
-    ; per-frame siphon runtime reset (unconditional — even when frame_prep
-    ; kept the old front): the first siphon line re-programs VMADD, and the
-    ; running source cursor restarts at the cached base.
-    stz K_SIPHON_STARTED
-    rep #$20
-    .a16
-    lda K_SIPHON_SRC_BASE
-    sta K_SIPHON_SRC
-    sep #$20
-    .a8
-
     ; --- SNES -> cart mailbox: push joypad state once per frame -------
-    ; At PAD_LINE (well past vblank's start) auto-joypad has finished, so
-    ; $4218.. hold this frame's pads. Write them into the cart's writable
-    ; mailbox window and ring the doorbell so the coprocessor acts on a
-    ; complete block rather than a half-written one.
+    ; MUST sit here, on the path EVERY line takes. It lived below the
+    ; VIS_END block originally, which made it unreachable: at PAD_LINE the
+    ; frame is already armed, so `bne @dispatch` skipped it, and the only
+    ; line that DID reach it was VIS_END itself — where the PAD_LINE compare
+    ; can never match. Dead code that assembled perfectly.
+    ;
+    ; At PAD_LINE auto-joypad has finished (it latches early in vblank and
+    ; takes ~3 lines), so $4218.. hold this frame's pads. The doorbell write
+    ; tells the coprocessor the block is complete rather than half-written.
     ;
     ; The cart bus is read-only EVERYWHERE ELSE; the coprocessor ignores
     ; writes outside the mailbox, so a stray store cannot corrupt staging
@@ -304,6 +278,37 @@
     .a8
     sta f:HX_MB_DOORBELL_L      ; any value — the ACCESS is the signal
 @no_pads:
+
+    ; --- once-per-frame prep at the V >= VIS_END crossing -------------
+    ; When V reaches the bottom letterbox (V >= VIS_END) the visible region
+    ; is done: latch the staged front buffer + arm the bulk DMA walk so the
+    ; big blank window (bottom LB + vblank + top LB, ~70 lines) DMAs the
+    ; frame, resident well before the unblank at V=top_lb. Gated to once
+    ; per frame by K_FRAME_ARMED (cleared while V < VIS_END).
+    lda K_VHI
+    bne @ge_vis                 ; V >= 256 -> past VIS_END for sure
+    lda K_VLO
+    cmp K_VIS_END               ; carry set if V.lo >= VIS_END
+    bcs @ge_vis
+    stz K_FRAME_ARMED           ; V < VIS_END: visible/top region -> re-arm
+    stz K_PAD_DONE              ; and re-arm the once-per-frame mailbox push
+    bra @dispatch
+@ge_vis:
+    lda K_FRAME_ARMED
+    bne @dispatch               ; already prepped this frame
+    lda #$01
+    sta K_FRAME_ARMED
+    jsr frame_prep              ; latch front + cache descriptors + arm walk (keeps Y)
+    ; per-frame siphon runtime reset (unconditional — even when frame_prep
+    ; kept the old front): the first siphon line re-programs VMADD, and the
+    ; running source cursor restarts at the cached base.
+    stz K_SIPHON_STARTED
+    rep #$20
+    .a16
+    lda K_SIPHON_SRC_BASE
+    sta K_SIPHON_SRC
+    sep #$20
+    .a8
 
 @dispatch:
     lda [K_FRONT_PTR],y         ; action = front action_table[V]
