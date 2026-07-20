@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "hx421_metatile.h"
+
 /* ---- singleton runtime state (the ABI is a single instance, like mgapi) --- */
 static HxaService *g_svc;
 static uint8_t     g_window[HX421_CART_WINDOW_BYTES];
@@ -151,18 +153,29 @@ static void e_lda_sta16(uint8_t *c, size_t *p, uint16_t imm, uint16_t addr) {
 }
 /* One baked VRAM DMA slot: src (offset in bank $C0) -> VRAM word `vword`,
  * `size` bytes, VMADD set + word-increment. A16 for the 16-bit fields. */
-static void e_dma_vram_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size, uint16_t vword) {
+/* VMAIN address-increment modes ($2115). Bit 7 = step after the HIGH byte;
+ * bits 1:0 select the step size in WORDS. The 32-word step is what makes a
+ * tilemap COLUMN a single contiguous DMA: entries in a 32x32 map are 32 words
+ * apart, so stepping by 32 walks straight down a column. */
+#define VMAIN_STEP1   0x80u
+#define VMAIN_STEP32  0x81u
+
+static void e_dma_vram_slot_m(uint8_t *c, size_t *p, uint16_t src, uint16_t size,
+                              uint16_t vword, uint8_t vmain) {
     e_lda_sta8(c, p, 0x18, HW_BBAD0);           /* B-bus = VMDATAL           */
     e_lda_sta8(c, p, 0x01, HW_DMAP0);           /* 2-reg lo/hi, A increments */
     e8(c, p, 0xC2); e8(c, p, 0x20);             /* rep #$20 (A16)            */
     e_lda_sta16(c, p, src, HW_A1T0L);           /* A-bus source              */
     e_lda_sta16(c, p, size, HW_DAS0L);          /* byte count                */
     e8(c, p, 0xE2); e8(c, p, 0x20);             /* sep #$20 (A8)             */
-    e_lda_sta8(c, p, 0x80, HW_VMAIN);           /* word incr after high byte */
+    e_lda_sta8(c, p, vmain, HW_VMAIN);          /* step size + after-high    */
     e8(c, p, 0xC2); e8(c, p, 0x20);             /* rep #$20                  */
     e_lda_sta16(c, p, vword, HW_VMADDL);        /* VRAM word dst             */
     e8(c, p, 0xE2); e8(c, p, 0x20);             /* sep #$20                  */
     e_lda_sta8(c, p, 0x01, HW_MDMAEN);          /* fire channel 0            */
+}
+static void e_dma_vram_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size, uint16_t vword) {
+    e_dma_vram_slot_m(c, p, src, size, vword, VMAIN_STEP1);
 }
 /* Emit the whole DMA body into buffer `base`: A-bus bank once, the tilemap
  * slot, then RTL. Returns the byte length. */
@@ -174,6 +187,187 @@ static size_t hx_emit_dma_body(uint32_t base, uint32_t tmap_src) {
     e8(c, &p, 0x6B);                                  /* rtl */
     return p;
 }
+
+static void e_dma_cgram_slot(uint8_t *c, size_t *p, uint16_t src, uint16_t size, uint8_t cgadd);
+
+/* ==================== metatile scrolling map demo ====================== *
+ * Proves the edge-seam win end-to-end: after the initial fill, a scrolling
+ * 1024x1024 px map costs at most ONE tilemap column (64 B) plus ONE row (64 B)
+ * per frame, against 2048 B for a full tilemap push.
+ *
+ * A tilemap column is strided 32 words apart in VRAM, so it goes out as a
+ * single DMA using VMAIN's 32-word step — that mode exists precisely for this.
+ *
+ * VRAM: tilemap at word 0x0000, CHR at word 0x2000. No double-buffering: the
+ * column being written is the one entering from off-screen, so it is never
+ * the one being displayed. */
+#define MAP_OFF_COL     0x0400u    /* 64 B: 32 tilemap entries (a column)  */
+#define MAP_OFF_ROW     0x0440u    /* 64 B: 32 tilemap entries (a row)     */
+#define MAP_OFF_FULL    0x0480u    /* 2048 B: initial full-tilemap fill    */
+#define MAP_OFF_CHR     0x0C80u    /* 512 B: 16 tiles, 4bpp                */
+#define MAP_OFF_CGRAM   0x0E80u    /* 32 B: 16 colours                     */
+#define MAP_TM_VWORD    0x0000u
+#define MAP_CHR_VWORD   0x2000u
+#define MAP_BG1SC       0x00u      /* tilemap base 0, 32x32                */
+#define MAP_BG12NBA     0x02u      /* BG1 CHR base 0x2000 words            */
+
+#define MAP_MT_SIDE     2u                    /* 2x2 tiles per metatile     */
+#define MAP_W_MT        64u                   /* 64x64 metatiles ...        */
+#define MAP_H_MT        64u                   /* ... = 128x128 tiles        */
+#define MAP_DEFS        8u
+#define MAP_TILES       16u
+#define MAP_PIX_W       (MAP_W_MT * MAP_MT_SIDE * 8u)   /* 1024 */
+#define MAP_PIX_H       (MAP_H_MT * MAP_MT_SIDE * 8u)
+
+static uint16_t       map_grid[MAP_W_MT * MAP_H_MT];
+static uint16_t       map_grid_t[MAP_W_MT * MAP_H_MT];   /* transposed copy */
+static Hx421TileEntry map_defs[MAP_DEFS * MAP_MT_SIDE * MAP_MT_SIDE];
+static Hx421MapLayer  map_layer;
+static int      g_map_mode;
+static int      g_map_cam_x, g_map_cam_y;
+static int      g_map_last_rtx, g_map_last_bty;   /* right/bottom edge tile */
+static int      g_map_seed_frames;                /* full pushes remaining  */
+static uint64_t g_map_frames;
+static uint32_t g_map_seam_bytes;                 /* steady-state accounting */
+
+/* 16 tiles: a few flats plus structure, enough to read the map's shape. */
+static void hx_map_build_assets(void) {
+    uint8_t *chr = &g_window[MAP_OFF_CHR];
+    memset(chr, 0, MAP_TILES * 32u);
+    for (unsigned t = 0; t < MAP_TILES; ++t) {
+        uint8_t *tile = chr + t * 32u;
+        for (int y = 0; y < 8; ++y) {
+            unsigned c;
+            if (t < 4)        c = t + 1;                              /* flats  */
+            else if (t < 8)   c = ((y >> 1) & 1) ? (t - 3) : (t + 1); /* bands  */
+            else if (t < 12)  c = ((y ^ (t & 3)) & 3) + 4;            /* weave  */
+            else              c = (unsigned)((y * (t - 11)) & 7) + 8; /* ramps  */
+            /* colour index c into the 4 bitplanes, all 8 px of the row */
+            tile[2 * y]          = (c & 1) ? 0xFF : 0x00;
+            tile[2 * y + 1]      = (c & 2) ? 0xFF : 0x00;
+            tile[16 + 2 * y]     = (c & 4) ? 0xFF : 0x00;
+            tile[16 + 2 * y + 1] = (c & 8) ? 0xFF : 0x00;
+        }
+    }
+    uint8_t *cg = &g_window[MAP_OFF_CGRAM];
+    static const uint8_t rgb[16][3] = {
+        {  8,  8, 16},{ 40, 90, 40},{ 60,130, 55},{ 90,160, 70},
+        {150,140, 90},{170,120, 60},{110, 80, 50},{ 70, 60, 50},
+        { 60,110,180},{ 90,150,210},{180,180,190},{220,220,230},
+        {130, 60, 60},{170, 90, 70},{200,150, 80},{240,220,140},
+    };
+    for (int i = 0; i < 16; ++i) {
+        uint16_t v = (uint16_t)(((rgb[i][2] >> 3) << 10) | ((rgb[i][1] >> 3) << 5) | (rgb[i][0] >> 3));
+        cg[i * 2] = (uint8_t)v; cg[i * 2 + 1] = (uint8_t)(v >> 8);
+    }
+
+    /* 8 metatiles, each 2x2 tiles drawn from the set above. */
+    for (unsigned m = 0; m < MAP_DEFS; ++m)
+        for (unsigned s = 0; s < MAP_MT_SIDE * MAP_MT_SIDE; ++s)
+            map_defs[m * 4u + s] = (Hx421TileEntry)(((m * 2u + s) % MAP_TILES) & 0x3FF);
+
+    /* A map with visible structure so scrolling is legible: broad regions with
+     * a scattered feature, from a cheap hash rather than a stored asset. */
+    for (unsigned y = 0; y < MAP_H_MT; ++y)
+        for (unsigned x = 0; x < MAP_W_MT; ++x) {
+            unsigned h = (x * 73856093u) ^ (y * 19349663u);
+            unsigned region = ((x >> 3) + (y >> 3)) % 3u;
+            map_grid[y * MAP_W_MT + x] = (uint16_t)(((h >> 13) & 7u) < 2u
+                                       ? 4u + ((h >> 17) & 3u)      /* feature */
+                                       : region);                   /* ground  */
+        }
+    hx421_metatile_transpose(map_grid, MAP_W_MT, MAP_H_MT, map_grid_t);
+
+    map_layer.map_rows  = map_grid;
+    map_layer.map_cols  = map_grid_t;     /* transposed: column seams burst */
+    map_layer.map_w     = MAP_W_MT;
+    map_layer.map_h     = MAP_H_MT;
+    map_layer.defs      = map_defs;
+    map_layer.def_count = MAP_DEFS;
+    map_layer.mt_side   = MAP_MT_SIDE;
+    map_layer.oob_entry = 0;
+}
+
+static void e_bg_scroll_xy(uint8_t *c, size_t *p, uint16_t hofs, uint16_t vofs) {
+    /* Both write-twice. VOFS carries the -1: the PPU shows BG line VOFS+1 on
+     * the first visible scanline (see e_bg_scroll). */
+    uint16_t v = (uint16_t)((vofs - 1u) & 0x3FFu);
+    e_lda_sta8(c, p, (uint8_t)(hofs & 0xFF), 0x210Du);
+    e_lda_sta8(c, p, (uint8_t)((hofs >> 8) & 0x03), 0x210Du);
+    e_lda_sta8(c, p, (uint8_t)(v & 0xFF), 0x210Eu);
+    e_lda_sta8(c, p, (uint8_t)((v >> 8) & 0x03), 0x210Eu);
+}
+
+/* Stage this frame's work into `base` and emit its DMA body. */
+static void hx_map_stage(uint32_t base) {
+    uint8_t *c = &g_window[base + HX_OFF_DMABODY];
+    size_t p = 0;
+    e_lda_sta8(c, &p, 0xC0u, HW_A1B0);                 /* A-bus bank once */
+    e_lda_sta8(c, &p, 0x01, 0x2105u);                  /* BGMODE 1        */
+    e_lda_sta8(c, &p, 0x01, 0x212Cu);                  /* TM: BG1 on main */
+    e_lda_sta8(c, &p, MAP_BG1SC,   0x2107u);
+    e_lda_sta8(c, &p, MAP_BG12NBA, 0x210Bu);
+    e_bg_scroll_xy(c, &p, (uint16_t)g_map_cam_x, (uint16_t)g_map_cam_y);
+
+    uint32_t bytes = 0;
+    if (g_map_seed_frames > 0) {
+        /* Startup: CHR, palette and the whole tilemap. */
+        memcpy(&g_window[base + MAP_OFF_CHR], &g_window[MAP_OFF_CHR], MAP_TILES * 32u);
+        memcpy(&g_window[base + MAP_OFF_CGRAM], &g_window[MAP_OFF_CGRAM], 32u);
+        hx421_metatile_rect(&map_layer, g_map_cam_x >> 3, g_map_cam_y >> 3, 32, 32,
+                            (Hx421TileEntry *)&g_window[base + MAP_OFF_FULL], 32);
+        e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_CHR), MAP_TILES * 32u, MAP_CHR_VWORD);
+        e_dma_cgram_slot(c, &p, (uint16_t)(base + MAP_OFF_CGRAM), 32u, 0x00);
+        e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_FULL), 2048u, MAP_TM_VWORD);
+        bytes = MAP_TILES * 32u + 32u + 2048u;
+        g_map_seed_frames--;
+    } else {
+        /* Steady state: at most one entering column and one entering row. */
+        int rtx = (g_map_cam_x + 255) >> 3;            /* right edge tile  */
+        int bty = (g_map_cam_y + 223) >> 3;            /* bottom edge tile */
+        if (rtx != g_map_last_rtx) {
+            Hx421TileEntry *col = (Hx421TileEntry *)&g_window[base + MAP_OFF_COL];
+            hx421_metatile_column(&map_layer, rtx, g_map_cam_y >> 3, 32, col);
+            /* column (rtx & 31) of a 32x32 map: stride 32 words */
+            e_dma_vram_slot_m(c, &p, (uint16_t)(base + MAP_OFF_COL), 64u,
+                              (uint16_t)(MAP_TM_VWORD + (rtx & 31)), VMAIN_STEP32);
+            bytes += 64u;
+            g_map_last_rtx = rtx;
+        }
+        if (bty != g_map_last_bty) {
+            Hx421TileEntry *row = (Hx421TileEntry *)&g_window[base + MAP_OFF_ROW];
+            hx421_metatile_row(&map_layer, bty, g_map_cam_x >> 3, 32, row);
+            e_dma_vram_slot(c, &p, (uint16_t)(base + MAP_OFF_ROW), 64u,
+                            (uint16_t)(MAP_TM_VWORD + (bty & 31) * 32));
+            bytes += 64u;
+            g_map_last_bty = bty;
+        }
+    }
+    e8(c, &p, 0x6B);                                   /* rtl */
+
+    /* Full field visible: no letterbox. */
+    uint8_t *act = &g_window[base + HX_OFF_ACTION];
+    memset(act, 0, 512);
+    act[0] = 2;                                        /* unblank at line 0 */
+    for (int v = 224; v < 262; ++v) act[v] = 1;
+    g_window[base + HX_OFF_HDR_TOP_LB]  = 0;
+    g_window[base + HX_OFF_HDR_VIS_END] = 224;
+    g_window[base + HX_OFF_SIP_BPL + 0] = 0;
+    g_window[base + HX_OFF_SIP_BPL + 1] = 0;
+
+    if (g_map_frames > 8) g_map_seam_bytes += bytes;   /* exclude the seed */
+    g_map_frames++;
+    if (g_map_frames > 8 && (g_map_frames % 120u) == 0u) {
+        double avg = (double)g_map_seam_bytes / (double)(g_map_frames - 8u);
+        fprintf(stderr, "hx421 map: cam=(%4d,%4d)  seam avg %.1f B/frame  "
+                        "(full tilemap = 2048 B, %.0fx less)\n",
+                g_map_cam_x, g_map_cam_y, avg, avg > 0.0 ? 2048.0 / avg : 0.0);
+        fflush(stderr);
+    }
+}
+
+/* Defined after g_back, alongside the other producers — see below. */
+static void hx_produce_map_frame(void);
 
 /* ============================ FMV static-frame slice ================== */
 /* B3 first slice: a synthetic 240x208 4bpp frame lives in host RAM (the PSRAM
@@ -1070,6 +1264,18 @@ HX421_API int hx421_init(const Hx421Config *cfg) {
     g_music_voice = AUDIO_VOICE_NONE;
     g_cmd_mode    = (getenv("HX421_CMD") != NULL);
     g_fmv_mode    = (getenv("HX421_FMV") != NULL);   /* FMV band pipeline */
+    g_map_mode    = (!g_fmv_mode && getenv("HX421_MAP") != NULL);  /* scrolling map */
+    if (g_map_mode) {
+        hx_map_build_assets();
+        g_map_cam_x = g_map_cam_y = 0;
+        g_map_last_rtx = g_map_last_bty = -1;
+        g_map_seed_frames = 2;                       /* CHR+palette+full tilemap */
+        g_map_frames = 0;
+        g_map_seam_bytes = 0;
+        fprintf(stderr, "hx421 map: %ux%u px, %ux%u metatiles (%u tiles/side), "
+                        "seam-only after %d seed frames\n",
+                MAP_PIX_W, MAP_PIX_H, MAP_W_MT, MAP_H_MT, MAP_MT_SIDE, g_map_seed_frames);
+    }
     if (g_fmv_mode) {
         g_fmv_need_decode = 1;                        /* decode frame 0 on the first band 0 */
         /* A/B the staging depths without a rebuild. These ARE output latency —
@@ -1264,6 +1470,8 @@ HX421_API uint8_t hx421_cart_read(uint32_t addr) {
              * fix for the just-in-time-staging judder: production no longer rides
              * hx421_step's audio-sample phase, which drifts vs the SNES frame. */
             hx_produce_fmv_band();
+        } else if (g_map_mode) {
+            hx_produce_map_frame();                    /* SNES-clock paced, as FMV */
         } else {
             g_window[HX_FRAME_READY_ADDR] = 0x00;      /* M2 bars: consumed; step re-publishes */
         }
@@ -1277,6 +1485,17 @@ HX421_API uint8_t hx421_cart_read(uint32_t addr) {
     /* TODO(M2+): joypad-mailbox readback ($7000-77FF), more DMA slots
      * (CGRAM/OAM), the per-scanline siphon (action code 3). */
     return g_window[a];
+}
+
+/* Scrolling-map producer: drift the camera and stage this frame's seams into
+ * the back buffer. Diagonal drift — 1 px/frame across, 1 px per 2 frames down —
+ * wrapping well inside the map so neither seam ever falls outside it. */
+static void hx_produce_map_frame(void) {
+    if (!g_rom_loaded) return;
+    g_map_cam_x = (int)((g_map_frames * 1u) % (MAP_PIX_W - 256u));
+    g_map_cam_y = (int)((g_map_frames / 2u) % (MAP_PIX_H - 224u));
+    hx_map_stage(g_back ? HX_BUF1_BASE : HX_BUF0_BASE);
+    g_window[HX_FRAME_READY_ADDR] = (uint8_t)(g_back + 1);
 }
 
 /* Produce one FMV band into the back buffer: the PSRAM->window band copy +
@@ -1457,6 +1676,8 @@ HX421_API void hx421_step(uint64_t elapsed_ns) {
      * band once so the very first VIS_END has something to latch. */
     if (g_fmv_mode) {
         if (!g_fmv_kicked) { g_fmv_kicked = 1; hx_produce_fmv_band(); }
+    } else if (g_map_mode) {
+        if (g_map_frames == 0) hx_produce_map_frame();   /* kick; then FRAME_DONE paced */
     } else {
         hx_produce_frame();
     }

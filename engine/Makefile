@@ -110,8 +110,16 @@ $(BUILD)/hx421_wasapi.o: $(RUNTIME_DIR)/hx421_wasapi.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -DHX421_BUILDING_DLL -c $< -o $@
 
-$(BUILD)/hx421.dll: $(ENGINE_OBJ) $(BUILD)/hx421_runtime.o $(BUILD)/hx421_wasapi.o
-	$(CC) -shared -o $@ $(ENGINE_OBJ) $(BUILD)/hx421_runtime.o $(BUILD)/hx421_wasapi.o -lm -lole32 $(LDFLAGS)
+# Metatile map expansion: reference implementation AND the spec the RTL block
+# is written from, so it stays dependency-free and integer-only.
+$(BUILD)/hx421_metatile.o: $(RUNTIME_DIR)/hx421_metatile.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -DHX421_BUILDING_DLL -c $< -o $@
+
+DLL_OBJ = $(BUILD)/hx421_runtime.o $(BUILD)/hx421_wasapi.o $(BUILD)/hx421_metatile.o
+
+$(BUILD)/hx421.dll: $(ENGINE_OBJ) $(DLL_OBJ)
+	$(CC) -shared -o $@ $(ENGINE_OBJ) $(DLL_OBJ) -lm -lole32 $(LDFLAGS)
 
 dll: $(BUILD)/hx421.dll
 

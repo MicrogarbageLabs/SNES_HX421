@@ -35,6 +35,9 @@ param(
     [string]$Wav,          # stream this WAV (44100 Hz) instead of the SMOKE tone
     [switch]$Interactive,  # set $HX421_CMD=1: DLL preloads SFX slots and the
                            # chip issues audio commands on SNES button presses
+    [switch]$Map,          # set $HX421_MAP=1: scrolling metatile map (needs -Kernel).
+                           # Proves the edge-seam win: after the seed frames the
+                           # tilemap costs <=128 B/frame instead of 2048.
     [switch]$Fmv,          # set $HX421_FMV=1: run the FMV band pipeline (needs -Kernel)
     [string]$FmvFile       # a real .fmv (FMV2) to stream; omit for the synthetic
                            # scrolling source. Implies -Fmv. Audio+video interleaved.
@@ -87,6 +90,13 @@ if ($Kernel) {
 # Optional: FMV static-frame band demo. The DLL builds a synthetic 240x208 4bpp
 # frame in host RAM (the PSRAM analog) and delivers it in 4 subframe bands, one
 # per NMI, through the emitted DMA body. Needs -Kernel (the M2 video kernel).
+if ($Map) {
+    if (-not $Kernel) { Die "-Map needs -Kernel (the video kernel serves the frames)" }
+    if ($Fmv -or $FmvFile) { Die "-Map and -Fmv are mutually exclusive" }
+    $env:HX421_MAP = "1"
+    Write-Step "HX421_MAP=1, scrolling metatile map (seam-only tilemap updates)"
+}
+
 if ($Fmv -or $FmvFile) {
     if (-not $Kernel) { Die "-Fmv needs -Kernel (the video kernel serves the bands)" }
     $env:HX421_FMV = "1"
