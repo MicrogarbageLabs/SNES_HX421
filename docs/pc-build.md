@@ -27,6 +27,53 @@ contain spaces, which bash would otherwise split):
 bash -c "cd '/c/path/to/SNES_HX_421/engine' && make CC=gcc <target>"
 ```
 
+## Rebuilding bsnes-plus with the HX-421 chip
+
+Needed whenever `host/bsnes-plus/*` or `include/hx421.h` changes — the chip is compiled INTO
+`bsnes.exe`, so a new DLL alone is not enough.
+
+**1. Copy the sources in** (the bsnes tree uses different filenames):
+
+| ours | bsnes-plus tree (`bsnes/snes/chip/hx421/`) |
+|---|---|
+| `host/bsnes-plus/hx421_chip.cpp` | `hx421.cpp` |
+| `host/bsnes-plus/hx421_chip.hpp` | `hx421.hpp` |
+| `include/hx421.h` | `hx421.h` |
+| `host/bsnes-plus/hx421_chip.serialization.cpp` | (same name) |
+
+Nothing auto-syncs these. Skip the copy and the rebuild silently links the OLD chip against the
+new DLL.
+
+**2. Force the affected objects out.** bsnes-plus's `.o` rules use hand-maintained dependency
+lists, so a changed `#include`d file can silently not rebuild:
+
+```powershell
+cd <bsnes-plus>\bsnes
+Remove-Item obj\compatibility\snes-hx421.o, obj\compatibility\snes-cartridge.o -Force
+```
+
+**3. Build** (MSYS2 MinGW64 tools on PATH):
+
+```powershell
+$env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
+mingw32-make -j4
+```
+
+Output is `bsnes/out/bsnes.exe`. `tools/run-hx421.ps1` stages `hx421.dll` beside it on each launch.
+
+### When the chip fails to load, bsnes does NOT fail loudly
+
+It falls back to normal mapping and boots the trigger `.sfc` as an ordinary cart — so the symptom
+is "the wrong ROM booted", not "the DLL was rejected". **Read the log first**; the real reason is
+on line 1:
+
+```
+hx421: ABI mismatch — header 00010000, dll 00010001. refusing to load.
+```
+
+That exact case (an additive MINOR bump rejected by a strict-equality check) cost a debugging
+round; both sides now compare MAJOR only.
+
 ## Make targets (`engine/Makefile`)
 
 | Target | Produces | What it proves |
