@@ -1114,9 +1114,42 @@ static void hx421_audio_worker_stop(void);
 static void hx421_audio_lock_init(void);
 static void hx_produce_fmv_band(void);   /* FMV producer (called from the FRAME_DONE handler) */
 
-/* read the next unit from the file into `dst` (loops at EOF). I/O side — runs
- * on the read-ahead thread (or the caller on the non-threaded fallback). */
+/* ---- playback state machine -------------------------------------------
+ * The game's whole vocabulary is prime/start/pause/stop/reset. It never names
+ * a frame or a sub-frame: seeking, FIFO refill and preroll are the engine's
+ * business. Seek requests are set here and consumed by the reader thread, so
+ * the caller never blocks on I/O. */
+typedef enum { FMV_STOPPED = 0, FMV_PLAYING, FMV_PAUSED } FmvState;
+
+static volatile int      g_fmv_state = FMV_PLAYING;   /* legacy default: autoplay */
+static volatile int      g_fmv_seek_req = -1;         /* >=0: reader seeks here   */
+static volatile int      g_fmv_flush_req;             /* drop stale FIFO frames   */
+static uint64_t          g_fmv_started;               /* start() calls            */
+
+static void fmv_seek_to(uint32_t frame) {             /* reader picks this up */
+    g_fmv_seek_req  = (int)frame;
+    g_fmv_flush_req = 1;
+}
+static void fmv_api_start(void) {
+    if (g_fmv_state != FMV_PLAYING) { g_fmv_state = FMV_PLAYING; g_fmv_started++; }
+}
+static void fmv_api_pause(void)  { if (g_fmv_state == FMV_PLAYING) g_fmv_state = FMV_PAUSED; }
+static void fmv_api_toggle(void) { if (g_fmv_state == FMV_PLAYING) fmv_api_pause();
+                                   else                            fmv_api_start(); }
+static void fmv_api_stop(void)   { g_fmv_state = FMV_STOPPED; fmv_seek_to(0); }
+static void fmv_api_reset(void)  { fmv_seek_to(0); fmv_api_start(); }
+
+/* read the next unit from the file into `dst`. Honours a pending seek, and
+ * loops at EOF. I/O side — runs on the read-ahead thread. */
 static int fmv_read_next_unit(uint8_t *dst) {
+    int want = g_fmv_seek_req;
+    if (want >= 0) {                                   /* seek via the index */
+        g_fmv_seek_req = -1;
+        uint32_t f = (uint32_t)want;
+        if (f >= fmv_nframes) f = 0;
+        fseek(fmv_file, fmv_data_off + (long)f * (long)fmv_unit_bytes, SEEK_SET);
+        fmv_cur_frame = f;
+    }
     if (fmv_cur_frame >= fmv_nframes ||
         fread(dst, 1, fmv_unit_bytes, fmv_file) != fmv_unit_bytes) {
         fseek(fmv_file, fmv_data_off, SEEK_SET);   /* loop */
@@ -1222,6 +1255,15 @@ static DWORD WINAPI fmv_reader_fn(LPVOID arg) {
     (void)arg;
     static uint8_t unit[FMV_UNIT_MAX];             /* worker-local read scratch */
     while (!fmv_reader_stop) {
+        /* A seek invalidates everything queued: drop it here, on the producer
+         * side, so the consumer simply sees an empty FIFO and holds its last
+         * frame rather than displaying frames from the old position. */
+        if (g_fmv_flush_req) {
+            g_fmv_flush_req = 0;
+            unsigned w = atomic_load(&fmv_fifo_w);
+            atomic_store(&fmv_fifo_r, w);
+            fmv_apush = w;
+        }
         /* Audio is HELD until the SNES strobes its first FRAME_DONE (g_fmv_av_started).
          * The reader runs from DLL init, but the console needs time to boot — without
          * this gate the ring plays out and starves during that blank period, putting
@@ -1808,7 +1850,8 @@ static void hx_produce_fmv_band(void) {
     /* Do NOT advance during the preroll: the video must HOLD at frame 0 while the
      * worker streams audio ahead. (Advancing here is what made the old preroll
      * merely skip content instead of delaying the picture.) */
-    if (band == 0 && g_fmv_need_decode && g_fmv_preroll == 0) {
+    if (band == 0 && g_fmv_need_decode && g_fmv_preroll == 0
+        && g_fmv_state == FMV_PLAYING) {                   /* paused: hold the frame */
         int ok;
         if (fmv_file) ok = fmv_advance_frame();            /* pop next FIFO frame (video only) */
         else        { fmv_gen_chr(g_fmv_phase); ok = 1; }
@@ -2349,6 +2392,38 @@ static void hx_mailbox_doorbell(void) {
     const uint8_t *mb = &g_window[HX421_MB_JOYPADS];
     for (unsigned i = 0; i < HX421_MAX_PADS; ++i)
         g_mb_pads[i] = (uint16_t)(mb[i * 2] | ((uint16_t)mb[i * 2 + 1] << 8));
+
+    /* Pad edges drive the FMV transport — the game's whole vocabulary, exercised
+     * over the mailbox rather than a debug hook. START toggles pause, SELECT
+     * rewinds, A jumps ~5 s forward (which forces a real index seek + FIFO
+     * flush, the path that branching playback will use). */
+    {
+        static uint16_t prev;
+        uint16_t now = g_mb_pads[0], pressed = (uint16_t)(now & ~prev);
+        prev = now;
+        if (g_fmv_mode && fmv_file) {
+            if (pressed & 0x1000u) {                      /* Start */
+                fmv_api_toggle();
+                fprintf(stderr, "hx421 fmv: %s\n",
+                        g_fmv_state == FMV_PLAYING ? "PLAY" : "PAUSE");
+            }
+            if (pressed & 0x2000u) {                      /* Select */
+                fmv_api_reset();
+                fprintf(stderr, "hx421 fmv: RESET to frame 0\n");
+            }
+            if (pressed & 0x0080u) {                      /* A */
+                uint32_t t = fmv_cur_frame + 75u;         /* ~5 s at 15 fps */
+                if (t >= fmv_nframes) t = 0;
+                fmv_seek_to(t);
+                fprintf(stderr, "hx421 fmv: SEEK -> frame %u\n", t);
+            }
+            if (pressed & 0x4000u) {                      /* Y = stop */
+                fmv_api_stop();
+                fprintf(stderr, "hx421 fmv: STOP (rewound, held)\n");
+            }
+            fflush(stderr);
+        }
+    }
 
     if (g_mb_rings <= 3 || (g_mb_rings % 300u) == 0u) {
         fprintf(stderr, "hx421 mb: ring #%llu  pads=%04X %04X %04X %04X  "
