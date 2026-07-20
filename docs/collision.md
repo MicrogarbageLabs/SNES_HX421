@@ -116,14 +116,69 @@ blocks on it.
 - It removes the per-frame vector math from the STM32, which is running game logic out of 64 KB and
   has no cycles to spare on 2000 sphere tests.
 
+## 2D actor collider — 1-bit sprite masks
+
+Scheduled after the TBDR base and audio validation. The 3D path above handles meshes; most of what
+a game actually collides is **sprites**, and for those a 1-bit-per-pixel mask gives true per-pixel
+accuracy for less memory than the artwork itself.
+
+### Why the masks are nearly free
+
+```
+mask, 1 bit/px          8x8    8 B     16x16   32 B     32x32  128 B     64x64  512 B
+the sprite's own CHR    8x8   32 B     16x16  128 B     32x32  512 B
+                                       -> the mask is 1/4 the size of the art
+```
+
+64 actors at 16x16 is **2 KB of masks** — resident in BRAM with room to spare, and no PSRAM fetch
+at all during collision. That is the point: collision never touches the CHR, so it does not compete
+with the renderer for PSRAM bandwidth. Masks for the full actor set live in PSRAM and are pulled
+into BRAM when an actor spawns, not per frame.
+
+### Test
+
+Broad phase first, mask test only on the survivors:
+
+```
+1. AABB overlap                      ~10 cycles, culls almost everything
+2. clip to the overlapping rect
+3. per row: shift one mask by dx, AND with the other, test non-zero
+```
+
+A 16x16 pair is at most 16 shift-AND-test operations. In fabric a barrel shifter aligns the row and
+the non-zero test is an OR tree, so a 32-wide row resolves in a cycle. With ~20 AABB overlaps in a
+busy frame that is a few hundred operations — beneath measurement.
+
+Return the **first set bit's position** as well as the boolean: that gives a contact point for
+spawning impact effects, which AABB collision cannot provide and which is most of why per-pixel
+looks better.
+
+### Masks are DERIVED, never authored
+
+Generate them in the asset pipeline from the sprite's own CHR — any non-zero (non-transparent)
+pixel becomes a 1. Hand-authored masks drift from the art the moment a sprite is redrawn, and the
+resulting bug is "hits register slightly off the picture", which is maddening to trace back to an
+asset. Deriving them makes drift impossible.
+
+### Shares the registry
+
+A 2D actor is the same registry entry as a 3D object with a mask instead of a mesh: position,
+flags, layer and mask fields are identical. One table, one broad phase, two narrow phases chosen by
+what the entry carries — so a bullet can test against both sprite actors and mesh geometry without
+the game holding two worlds.
+
 ## Build order
+
+Sequenced after the TBDR base and audio validation.
 
 1. **Object registry + transform** — shared with the renderer from the start, not retrofitted.
 2. **Broad phase + collision list readback** — sphere only; measure the real pair count before
    deciding whether a spatial hash is warranted.
-3. **AABB/OBB mid phase.**
-4. **Collision planes + deflection normals.**
-5. **Passthrough flags, layers and masks.**
+3. **2D actor masks** — derived in the asset pipeline, AABB then shift-AND. Cheapest piece with
+   the most immediate gameplay payoff, and it exercises the registry before the 3D maths lands.
+4. **AABB/OBB mid phase.**
+5. **Collision planes + deflection normals.**
+6. **Passthrough flags, layers and masks.**
 
 Steps 1-2 are the ones that prove the interface; everything after refines precision rather than
 changing shape.
