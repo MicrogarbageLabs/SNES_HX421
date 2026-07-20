@@ -243,6 +243,32 @@ int main(void) {
         check(tiny.used <= HX421_DYN_SLOTS, "allocation never exceeds the pool");
         check(tiny.used + tiny.n_degraded == tiny.n_mixed,
               "every mixed tile is either allocated or degraded, never lost");
+        check(tiny.n_degraded == 0,
+              "a full-screen pool absorbs a dense scene without degrading");
+
+        /* DYNAMIC FRAME RATE: complexity costs bursts, not detail. */
+        printf("-- dynamic frame rate (6.2 KB per burst) --\n");
+        const unsigned BURST = 6348u;                 /* ~6.2 KB */
+        struct { const char *name; Hx421RenderOut *r; } cases[2] = {
+            { "sparse", &out }, { "dense", &tiny }
+        };
+        for (int c = 0; c < 2; ++c) {
+            Hx421RenderOut *r = cases[c].r;
+            unsigned sf = hx421_frame_subframes(r, BURST);
+            printf("   %-7s %3u tiles = %5.1f KB -> %u burst(s) -> %2u fps\n",
+                   cases[c].name, r->used, r->used * 32.0 / 1024.0, sf, 60u / sf);
+
+            /* the chunks must exactly tile the CHR: no gap, no overlap */
+            uint32_t off, len, walked = 0; unsigned i = 0;
+            int contiguous = 1;
+            while (hx421_frame_chunk(r, BURST, i, &off, &len)) {
+                if (off != walked) contiguous = 0;
+                walked += len; i++;
+            }
+            check(i == sf,  "chunk count matches the reported burst count");
+            check(contiguous && walked == (uint32_t)r->used * 32u,
+                  "chunks tile the CHR exactly — no gap, no overlap");
+        }
     }
 
     printf("\n==== RASTER %s (%d failures) ====\n", failures ? "FAILED" : "OK", failures);

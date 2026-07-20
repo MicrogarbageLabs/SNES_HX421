@@ -78,7 +78,13 @@ void hx421_tile_pack4bpp(const uint8_t idx[HX421_TPIX], uint8_t out[32]);
  * which is the entire point of classifying. */
 #define HX421_SOLID_BASE   0u
 #define HX421_DYN_BASE     16u
-#define HX421_DYN_SLOTS    256u        /* 8 KB of CHR */
+/* Sized for a FULL SCREEN of unique tiles (30x25 = 750) rather than a fixed
+ * smaller pool. A complex frame should cost more TIME, not less detail: it
+ * spans more vblank bursts and the effective frame rate drops. Degrading was
+ * the wrong trade — it makes quality depend on a budget the artist cannot see.
+ * 750 slots = 24 KB of CHR; the double-buffered pair fits VRAM alongside the
+ * tilemaps (see hx421_frame_subframes). */
+#define HX421_DYN_SLOTS    750u
 #define HX421_MAP_W        32u         /* SNES tilemap is 32x32 entries */
 #define HX421_MAP_H        32u
 
@@ -105,6 +111,30 @@ void hx421_build_solid_tiles(uint8_t out[16 * 32]);
 void hx421_render_frame(const Hx421Tri *tris, int count,
                         int tiles_w, int tiles_h, uint8_t palette,
                         Hx421RenderOut *out);
+
+/* DYNAMIC FRAME RATE: how many vblank bursts this frame's CHR needs.
+ *
+ * A frame is not shown until ALL its CHR has landed, so a complex frame simply
+ * takes more bursts and the effective rate drops — 60/n. That requires the CHR
+ * to be DOUBLE-BUFFERED, since the previous frame must stay on screen while the
+ * new one streams in; the tilemap and CHR base flip together after the last
+ * burst, exactly as the FMV path flips at its band 3.
+ *
+ *   used  CHR      bursts @6.2 KB   fps
+ *    65   2.0 KB        1           60
+ *   194   6.2 KB        1           60
+ *   400  12.5 KB        3           20
+ *   750  24.0 KB        4           15
+ *
+ * VRAM for the double-buffered pair is 2 x 24 KB = 48 KB, leaving ~16 KB for
+ * tilemaps and OBJ — it fits, and the CHR-base overlap trick can reclaim
+ * another granule if needed (docs/fmv-engine.md). */
+unsigned hx421_frame_subframes(const Hx421RenderOut *out, unsigned bytes_per_burst);
+
+/* Byte range of burst `i` within the frame's CHR, for staging one chunk at a
+ * time. Returns 0 when `i` is past the end. */
+int hx421_frame_chunk(const Hx421RenderOut *out, unsigned bytes_per_burst,
+                      unsigned i, uint32_t *off, uint32_t *len);
 
 /* Does a triangle's bounding box touch this tile? The binning predicate,
  * exposed so the caller can build tile lists with the same test the

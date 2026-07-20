@@ -201,6 +201,26 @@ void hx421_render_frame(const Hx421Tri *tris, int count,
     }
 }
 
+unsigned hx421_frame_subframes(const Hx421RenderOut *out, unsigned bytes_per_burst) {
+    if (!out || !bytes_per_burst) return 1u;
+    const uint32_t bytes = (uint32_t)out->used * 32u;
+    if (bytes == 0) return 1u;                    /* nothing to upload, still flip */
+    return (unsigned)((bytes + bytes_per_burst - 1u) / bytes_per_burst);
+}
+
+int hx421_frame_chunk(const Hx421RenderOut *out, unsigned bytes_per_burst,
+                      unsigned i, uint32_t *off, uint32_t *len) {
+    if (!out || !bytes_per_burst) return 0;
+    const uint32_t bytes = (uint32_t)out->used * 32u;
+    const uint32_t start = i * bytes_per_burst;
+    if (start >= bytes) return 0;
+    uint32_t n = bytes - start;
+    if (n > bytes_per_burst) n = bytes_per_burst;
+    if (off) *off = start;
+    if (len) *len = n;
+    return 1;
+}
+
 void hx421_tile_pack4bpp(const uint8_t idx[HX421_TPIX], uint8_t out[32]) {
     if (!idx || !out) return;
     for (int i = 0; i < 32; ++i) out[i] = 0;
