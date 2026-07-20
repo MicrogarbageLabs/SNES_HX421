@@ -217,7 +217,13 @@ Derived ceiling **2 B / 70 ns = ~28.6 MB/s**. Workloads at 60 Hz:
 
 Comfortable even summed — ~8x headroom on the heaviest case.
 
-**Interleaving the two chips is NOT possible.** They share the address bus, data bus, OE/WE and byte
+**CORRECTION (2026-07-20): the CHR-base overlap scheme DOES close.** An earlier pass here
+concluded it did not, by computing the *saving* as the overlap size. The saving is the 4096-word
+**alignment granule**; the overlap is only the collision to manage. Placing the back CHR buffer one
+granule earlier reclaims 8 KB and contests just **13 tiles (416 B)**, written in the final band
+before the flip. See `docs/fmv-engine.md`.
+
+**Interleaving the two PSRAM chips is NOT possible.** They share the address bus, data bus, OE/WE and byte
 enables; only the chip enables differ. Two addresses can never be presented at once, so chip B's
 access cannot overlap chip A's data phase. The dual CEs are a **capacity** mechanism (2 x 64 Mbit),
 not a bandwidth one. Page mode is the only real lever for sequential throughput (~20-30 ns within an
