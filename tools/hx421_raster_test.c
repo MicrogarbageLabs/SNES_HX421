@@ -196,6 +196,55 @@ int main(void) {
         check(mixed < 750, "solid/empty compression is doing something");
     }
 
+    /* 9. frame assembly: allocation, tilemap, and the pool-exhaustion path */
+    {
+        printf("-- frame assembly --\n");
+        static Hx421RenderOut out;
+        Hx421Tri scene[64];
+        int n = 0;
+        scene[n++] = quad_tri(0, 120, 240, 200, 500, 2, 0);
+        scene[n++] = quad_tri(0, 120, 240, 200, 500, 2, 1);
+        for (int i = 0; i < 10 && n < 62; ++i) {
+            int x = 12 + i * 22, y = 60 + (i % 3) * 25;
+            scene[n++] = quad_tri(x, y, x + 14, y + 14, (uint16_t)(200 + i), (uint8_t)(3 + i % 6), 0);
+            scene[n++] = quad_tri(x, y, x + 14, y + 14, (uint16_t)(200 + i), (uint8_t)(3 + i % 6), 1);
+        }
+        hx421_render_frame(scene, n, 30, 25, 0, &out);
+        printf("   empty %3u solid %3u mixed %3u -> %u CHR slots (%.1f KB), degraded %u\n",
+               out.n_empty, out.n_solid, out.n_mixed, out.used,
+               out.used * 32.0 / 1024.0, out.n_degraded);
+
+        check(out.n_empty + out.n_solid + out.n_mixed == 750, "frame classifies every tile");
+        check(out.used == out.n_mixed && out.n_degraded == 0,
+              "one CHR slot per mixed tile, none degraded");
+        check(out.tilemap[0] == 0, "an empty tile maps to the blank tile");
+
+        /* every mixed tile must land in the dynamic range, every other in solid */
+        int bad = 0;
+        for (int ty = 0; ty < 25; ++ty)
+            for (int tx = 0; tx < 30; ++tx) {
+                uint16_t t = out.tilemap[ty * HX421_MAP_W + tx] & 0x3FFu;
+                if (t >= HX421_DYN_BASE + HX421_DYN_SLOTS) bad++;
+            }
+        check(bad == 0, "every tilemap entry is in range");
+
+        /* pool exhaustion degrades rather than overruns */
+        static Hx421RenderOut tiny;
+        Hx421Tri fan[60];
+        int m = 0;
+        for (int i = 0; i < 30 && m < 58; ++i) {      /* many small quads = many mixed */
+            int x = (i % 10) * 24, y = (i / 10) * 60;
+            fan[m++] = quad_tri(x + 3, y + 3, x + 21, y + 45, (uint16_t)(150 + i), (uint8_t)(1 + i % 15), 0);
+            fan[m++] = quad_tri(x + 3, y + 3, x + 21, y + 45, (uint16_t)(150 + i), (uint8_t)(1 + i % 15), 1);
+        }
+        hx421_render_frame(fan, m, 30, 25, 0, &tiny);
+        printf("   dense scene: mixed %3u -> %u slots, degraded %u\n",
+               tiny.n_mixed, tiny.used, tiny.n_degraded);
+        check(tiny.used <= HX421_DYN_SLOTS, "allocation never exceeds the pool");
+        check(tiny.used + tiny.n_degraded == tiny.n_mixed,
+              "every mixed tile is either allocated or degraded, never lost");
+    }
+
     printf("\n==== RASTER %s (%d failures) ====\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

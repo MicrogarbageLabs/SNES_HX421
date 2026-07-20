@@ -68,6 +68,44 @@ Hx421TileKind hx421_tile_classify(const uint8_t idx[HX421_TPIX], uint8_t *solid_
  * interleaved per row in the first 16 bytes, planes 2/3 in the second 16. */
 void hx421_tile_pack4bpp(const uint8_t idx[HX421_TPIX], uint8_t out[32]);
 
+/* ---- frame assembly: allocate CHR slots and build the tilemap ----------
+ *
+ * VRAM tile layout the renderer assumes:
+ *   0        blank (fully transparent) — EMPTY tiles point here
+ *   1..15    solid colour 1..15         — SOLID tiles point here
+ *   16..     dynamic pool               — MIXED tiles get a slot
+ * The first 16 are uploaded ONCE; only the dynamic pool costs per-frame DMA,
+ * which is the entire point of classifying. */
+#define HX421_SOLID_BASE   0u
+#define HX421_DYN_BASE     16u
+#define HX421_DYN_SLOTS    256u        /* 8 KB of CHR */
+#define HX421_MAP_W        32u         /* SNES tilemap is 32x32 entries */
+#define HX421_MAP_H        32u
+
+typedef struct {
+    uint16_t tilemap[HX421_MAP_W * HX421_MAP_H];
+    uint8_t  chr[HX421_DYN_SLOTS * 32];   /* packed dynamic tiles, `used` valid */
+    uint16_t used;                        /* dynamic slots consumed this frame */
+    uint16_t n_empty, n_solid, n_mixed;   /* classification census             */
+    uint16_t n_degraded;                  /* MIXED tiles forced solid: pool full */
+} Hx421RenderOut;
+
+/* Build the 16 resident tiles (blank + one per colour index) into `out`,
+ * 32 B each. Uploaded once at init, never per frame. */
+void hx421_build_solid_tiles(uint8_t out[16 * 32]);
+
+/* Rasterise a whole frame: classify every tile, allocate CHR slots for the
+ * mixed ones, and fill the tilemap. `palette` is the BG palette (0..7) written
+ * into every entry.
+ *
+ * If the dynamic pool is exhausted, remaining MIXED tiles DEGRADE to their
+ * most common colour rather than corrupting or overrunning — bounded output is
+ * worth more than exactness in the tile that broke the budget. `n_degraded`
+ * reports it, so the condition is visible instead of silent. */
+void hx421_render_frame(const Hx421Tri *tris, int count,
+                        int tiles_w, int tiles_h, uint8_t palette,
+                        Hx421RenderOut *out);
+
 /* Does a triangle's bounding box touch this tile? The binning predicate,
  * exposed so the caller can build tile lists with the same test the
  * rasteriser uses — a mismatch between them drops or duplicates geometry. */

@@ -131,6 +131,76 @@ Hx421TileKind hx421_tile_classify(const uint8_t idx[HX421_TPIX], uint8_t *solid_
     return HX421_TILE_SOLID;
 }
 
+void hx421_build_solid_tiles(uint8_t out[16 * 32]) {
+    if (!out) return;
+    uint8_t px[HX421_TPIX];
+    for (unsigned c = 0; c < 16; ++c) {
+        for (unsigned i = 0; i < HX421_TPIX; ++i) px[i] = (uint8_t)c;
+        hx421_tile_pack4bpp(px, out + c * 32);   /* c==0 packs to all zero = blank */
+    }
+}
+
+/* Most frequent non-zero index in a tile — the fallback colour when a MIXED
+ * tile cannot be given a CHR slot. */
+static uint8_t dominant_index(const uint8_t idx[HX421_TPIX]) {
+    unsigned hist[16] = {0};
+    for (unsigned i = 0; i < HX421_TPIX; ++i) hist[idx[i] & 0x0Fu]++;
+    unsigned best = 1, bestn = 0;
+    for (unsigned c = 1; c < 16; ++c) if (hist[c] > bestn) { bestn = hist[c]; best = c; }
+    return (uint8_t)(bestn ? best : 0);
+}
+
+void hx421_render_frame(const Hx421Tri *tris, int count,
+                        int tiles_w, int tiles_h, uint8_t palette,
+                        Hx421RenderOut *out) {
+    if (!out) return;
+    out->used = out->n_empty = out->n_solid = out->n_mixed = out->n_degraded = 0;
+    for (unsigned i = 0; i < HX421_MAP_W * HX421_MAP_H; ++i) out->tilemap[i] = 0;
+    if (!tris || count <= 0 || tiles_w <= 0 || tiles_h <= 0) return;
+    if (tiles_w > (int)HX421_MAP_W) tiles_w = (int)HX421_MAP_W;
+    if (tiles_h > (int)HX421_MAP_H) tiles_h = (int)HX421_MAP_H;
+
+    const uint16_t attr = (uint16_t)((palette & 7u) << 10);   /* pal, prio 0, no flip */
+    uint8_t  idx[HX421_TPIX];
+    uint16_t zb[HX421_TPIX];
+
+    for (int ty = 0; ty < tiles_h; ++ty) {
+        for (int tx = 0; tx < tiles_w; ++tx) {
+            hx421_tile_clear(idx, zb);
+            hx421_raster_tile(tris, count, tx, ty, idx, zb);
+
+            uint8_t solid = 0;
+            uint16_t tile;
+            switch (hx421_tile_classify(idx, &solid)) {
+                case HX421_TILE_EMPTY:
+                    out->n_empty++;
+                    tile = HX421_SOLID_BASE;                  /* blank, costs no DMA */
+                    break;
+                case HX421_TILE_SOLID:
+                    out->n_solid++;
+                    tile = (uint16_t)(HX421_SOLID_BASE + solid);
+                    break;
+                default:
+                    out->n_mixed++;
+                    if (out->used < HX421_DYN_SLOTS) {
+                        hx421_tile_pack4bpp(idx, out->chr + out->used * 32);
+                        tile = (uint16_t)(HX421_DYN_BASE + out->used);
+                        out->used++;
+                    } else {
+                        /* Pool exhausted. Degrade to the dominant colour: the
+                         * tile loses detail but the frame stays within budget
+                         * and within the pool's bounds. */
+                        out->n_degraded++;
+                        tile = (uint16_t)(HX421_SOLID_BASE + dominant_index(idx));
+                    }
+                    break;
+            }
+            out->tilemap[(unsigned)ty * HX421_MAP_W + (unsigned)tx] =
+                (uint16_t)(tile | attr);
+        }
+    }
+}
+
 void hx421_tile_pack4bpp(const uint8_t idx[HX421_TPIX], uint8_t out[32]) {
     if (!idx || !out) return;
     for (int i = 0; i < 32; ++i) out[i] = 0;
