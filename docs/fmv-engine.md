@@ -147,6 +147,18 @@ Corollary worth acting on: FMV runs `TOP_LB = 8`, so the display unblanks at lin
 is still running to ~10 — about **two lines of DMA during active display**. It is not visibly
 disturbing the picture, but it is real, and it is what the `overruns` counter exists to catch.
 
+## Backlog: instant switching between clips in one container
+
+**Low priority — deferred deliberately.** The pieces are already in place: the container carries a
+per-frame index per clip, and pack-load primes every clip's head into PSRAM (~77 KB each, ~2.5 MB
+for 32 clips). Switching clip mid-playback is then: point at the new clip's primed head, flush the
+FIFO and the audio ring, and let the arbiter pick the tail up off SD — the same flush-and-refill the
+scrub release already does.
+
+That gives Dragon's Lair-style branching with no rebuffering gap. What is missing is only the
+plumbing: a clip-select call, the head table, and per-clip reader state. Nothing here is a research
+question, which is why it can wait.
+
 ## Build order
 
 1. **Container + packer** (`tools/`) — asset pipeline first; everything downstream needs it.
