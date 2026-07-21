@@ -24,6 +24,22 @@ static const Hx421Vec pv[3] = {{0,0,0},{ONE,0,0},{0,ONE,0}};
 static const uint16_t pf[3] = {0,1,2};
 static const uint8_t  pc[1] = {1};
 
+/* Are two unit normals within ~5 degrees of each other? Used to assert that a
+ * cube's six derived planes stay distinct. */
+static int dot_ok(Hx421Vec a, Hx421Vec b) {
+    int64_t d = ((int64_t)a.x*b.x + (int64_t)a.y*b.y + (int64_t)a.z*b.z) >> 16;
+    return d > 65100;
+}
+/* Normalise in the test so a hand-written near-duplicate is actually unit. */
+static void normalize_test(Hx421Vec *v) {
+    int64_t x = v->x >> 8, y = v->y >> 8, z = v->z >> 8;
+    int32_t l = hx421_sqrt_q16(x*x + y*y + z*z);
+    if (l < 64) return;
+    v->x = (int32_t)(((int64_t)v->x << 16) / l);
+    v->y = (int32_t)(((int64_t)v->y << 16) / l);
+    v->z = (int32_t)(((int64_t)v->z << 16) / l);
+}
+
 static Hx421Mesh mesh_r(int32_t radius) {
     Hx421Mesh m = { pv, 3, pf, pc, 1, radius, {radius, radius, radius}, {0,0,0} };
     return m;
@@ -286,6 +302,175 @@ int main(void) {
             ck(hx421_midphase(t, tl) == 1, "mask pairs survive the mid phase untouched");
             ck(tl->c[0].px == 8 && tl->c[0].py == 8, "and keep their contact point");
         }
+        free(tl); free(t);
+    }
+
+    /* ---- narrow phase: plane sets and deflection ---- */
+    {
+        static const Hx421Vec cube[8] = {
+            {-ONE,-ONE,-ONE},{ ONE,-ONE,-ONE},{ ONE, ONE,-ONE},{-ONE, ONE,-ONE},
+            {-ONE,-ONE, ONE},{ ONE,-ONE, ONE},{ ONE, ONE, ONE},{-ONE, ONE, ONE},
+        };
+        static const uint16_t cf[36] = {
+            0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
+            3,6,2, 3,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
+        };
+        static const uint8_t cc12[12] = {1,1,2,2,3,3,4,4,5,5,6,6};
+        Hx421Plane planes[HX421_MAX_PLANES];
+        Hx421Mesh cm = { cube, 8, cf, cc12, 12, 0, {0,0,0}, {0,0,0}, 0, 0 };
+        hx421_mesh_fit_bounds(&cm);
+
+        unsigned np = hx421_mesh_fit_planes(&cm, planes, HX421_MAX_PLANES);
+        ck(np == 6, "a cube's 12 faces merge into 6 planes");
+        ck(cm.pcount == 6 && cm.planes == planes, "fit_planes wires the mesh up");
+
+        /* every plane must be unit length and at offset 1 from the origin */
+        int unit_ok = 1, off_ok = 1;
+        for (unsigned i = 0; i < np; ++i) {
+            int64_t l = (int64_t)planes[i].n.x*planes[i].n.x
+                      + (int64_t)planes[i].n.y*planes[i].n.y
+                      + (int64_t)planes[i].n.z*planes[i].n.z;
+            int32_t lq = (int32_t)(l >> 16);
+            if (lq < ONE - 700 || lq > ONE + 700) unit_ok = 0;
+            int32_t dd = planes[i].d - ONE; if (dd < 0) dd = -dd;
+            if (dd > 700) off_ok = 0;
+        }
+        ck(unit_ok, "derived plane normals are unit length");
+        ck(off_ok, "a unit cube's planes all sit at offset 1");
+
+        /* the six normals must be distinct — a slab's opposite faces must NOT
+         * merge, which is what the offset check in the merge exists to prevent */
+        int distinct = 1;
+        for (unsigned i = 0; i < np && distinct; ++i)
+            for (unsigned j = i + 1; j < np; ++j)
+                if (dot_ok(planes[i].n, planes[j].n)) { distinct = 0; break; }
+        ck(distinct, "opposite faces stay separate planes");
+
+        /* fit_planes must respect a cap smaller than the plane count */
+        Hx421Plane few[2];
+        Hx421Mesh cm2 = cm;
+        ck(hx421_mesh_fit_planes(&cm2, few, 2) == 2, "fit_planes honours the cap");
+
+        /* --- narrow phase fills the set --- */
+        Hx421Scene *t = calloc(1, sizeof *t);
+        Hx421ContactList *tl = calloc(1, sizeof *tl);
+        hx421_scene_init(t);
+        int cid = hx421_mesh_register(t, &cm);
+        int mover = hx421_object_spawn(t, cid);
+        int wall  = hx421_object_spawn(t, cid);
+        hx421_object_set_pos(t, wall, V(0,0,0));
+
+        /* Mover overlapping the wall's +x face. Unit cubes, so the boxes span
+         * [0.5, 2.5] and [-1, 1] — 0.5 of overlap. (At 2.5 they would be a full
+         * half-unit APART; the mid phase rejecting that is correct.) */
+        Hx421Vec near_x = { ONE + ONE/2, 0, 0 };
+        hx421_object_set_pos(t, mover, near_x);
+        hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+        hx421_midphase(t, tl);
+        ck(tl->count == 1, "pair survives to the narrow phase");
+        hx421_narrowphase(t, tl);
+        /* A flat face-on contact must report exactly ONE normal. Asserting only
+         * ">= 1" hides the failure that matters: over-reporting normals makes
+         * the resolver see three independent contacts, call it a wedge, and
+         * ZERO the velocity — so driving straight into a wall would stop dead
+         * instead of bouncing. */
+        ck(tl->c[0].nnormals == 1, "a face-on contact reports exactly one normal");
+        ck_near(tl->c[0].normals[0].x, ONE, 512, "and it is the face it actually hit");
+        {
+            Hx421Vec into = { -ONE, 0, 0 }, back;
+            ck(hx421_resolve(tl->c[0].normals, tl->c[0].nnormals, into,
+                             HX421_RESPONSE_BOUNCE, &back) == 1,
+               "a flat wall is not a wedge");
+            ck_near(back.x, ONE, 512, "and it bounces straight back");
+        }
+
+        /* An edge-on contact must report exactly TWO — the case a single
+         * winning plane gets wrong. */
+        {
+            Hx421Vec corner = { ONE + ONE/2, ONE + ONE/2, 0 };
+            hx421_object_set_pos(t, mover, corner);
+            hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+            hx421_midphase(t, tl);
+            hx421_narrowphase(t, tl);
+            ck(tl->count == 1, "corner pair survives the mid phase");
+            ck(tl->c[0].nnormals == 2, "an edge-on contact reports exactly two normals");
+        }
+        hx421_object_set_pos(t, mover, near_x);
+
+        /* a contact always carries at least one normal, even with no planes */
+        {
+            Hx421Mesh bare = cm; bare.planes = 0; bare.pcount = 0;
+            Hx421Scene *u = calloc(1, sizeof *u);
+            hx421_scene_init(u);
+            int bid3 = hx421_mesh_register(u, &bare);
+            int x1 = hx421_object_spawn(u, bid3), x2 = hx421_object_spawn(u, bid3);
+            hx421_object_set_pos(u, x1, V(0,0,0));
+            hx421_object_set_pos(u, x2, V(1,0,0));
+            Hx421ContactList *ul = calloc(1, sizeof *ul);
+            hx421_broadphase(u, ul, HX421_SCAN_TOPLEFT);
+            hx421_midphase(u, ul);
+            hx421_narrowphase(u, ul);
+            ck(ul->count == 1 && ul->c[0].nnormals == 1,
+               "a plane-less mesh falls back to the box normal");
+            free(ul); free(u);
+        }
+
+        /* --- resolution --- */
+        Hx421Vec nx = { ONE, 0, 0 }, ny = { 0, ONE, 0 }, nz = { 0, 0, ONE };
+        Hx421Vec vin = { -2 * ONE, 3 * ONE, 0 }, vout;
+
+        /* one contact: the plain v - 2(v.n)n */
+        ck(hx421_resolve(&nx, 1, vin, HX421_RESPONSE_BOUNCE, &vout) == 1, "single contact resolves");
+        ck_near(vout.x, 2 * ONE, 256, "bounce reverses the into-surface component");
+        ck_near(vout.y, 3 * ONE, 256, "and leaves the tangent untouched");
+
+        /* slide merely removes it */
+        hx421_resolve(&nx, 1, vin, HX421_RESPONSE_SLIDE, &vout);
+        ck_near(vout.x, 0, 256, "slide removes the into-surface component");
+        ck_near(vout.y, 3 * ONE, 256, "slide keeps the tangent");
+
+        /* THE case a single winning plane gets wrong: two walls at a right
+         * angle. Resolving against only one sends the object into the other. */
+        {
+            Hx421Vec pair[2] = { nx, ny };
+            Hx421Vec vdiag = { -2 * ONE, -2 * ONE, 0 };
+            ck(hx421_resolve(pair, 2, vdiag, HX421_RESPONSE_BOUNCE, &vout) == 1,
+               "a two-wall corner resolves");
+            ck_near(vout.x, 2 * ONE, 256, "corner reflects out on x");
+            ck_near(vout.y, 2 * ONE, 256, "and on y at the same time");
+        }
+
+        /* near-duplicate normals (an approximated curve) must NOT double-apply.
+         * Six copies of the same wall must give the same answer as one. */
+        {
+            Hx421Vec dupes[4] = { nx, nx, nx, nx };
+            dupes[1].y = ONE / 32;  normalize_test(&dupes[1]);   /* ~2 degrees off */
+            dupes[2].y = -ONE / 32; normalize_test(&dupes[2]);
+            hx421_resolve(dupes, 4, vin, HX421_RESPONSE_BOUNCE, &vout);
+            ck_near(vout.x, 2 * ONE, 3000, "near-duplicate normals dedup to one");
+            ck(vout.x < 4 * ONE, "and do not multiply the correction");
+        }
+
+        /* three independent contacts = wedged: stop, do not resolve */
+        {
+            Hx421Vec three[3] = { nx, ny, nz };
+            Hx421Vec vany = { -ONE, -ONE, -ONE };
+            ck(hx421_resolve(three, 3, vany, HX421_RESPONSE_BOUNCE, &vout) == 0,
+               "three independent contacts report wedged");
+            ck(vout.x == 0 && vout.y == 0 && vout.z == 0, "and zero the velocity");
+        }
+
+        /* an empty set is a no-op, not a crash or a zeroing */
+        ck(hx421_resolve(0, 0, vin, HX421_RESPONSE_BOUNCE, &vout) == 1, "empty set resolves");
+        ck(vout.x == vin.x && vout.y == vin.y, "empty set leaves the velocity alone");
+
+        /* passthrough is a flag on the entry, not a separate path: the contact
+         * is still reported so a trigger volume can fire. */
+        t->obj[mover].passthrough = 1;
+        hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+        hx421_midphase(t, tl);
+        ck(tl->count == 1, "a passthrough object still reports its hit");
+
         free(tl); free(t);
     }
 

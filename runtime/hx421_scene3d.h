@@ -48,6 +48,17 @@ typedef struct { int32_t m[9]; } Hx421Mat;
 /* A mesh's geometry. Vertices are model-space Q16.16; each face is three
  * vertex indices plus a palette index. Faces are flat-shaded — the renderer is
  * untextured, so colour is per face, not per vertex. */
+/* A collision plane in MODEL space: points with dot(n, p) > d are outside.
+ * A mesh carries only the few large flat surfaces that matter for bouncing, not
+ * its full hull — the narrow phase is a handful of dot products, never a
+ * per-polygon sweep. */
+typedef struct {
+    Hx421Vec n;      /* unit normal, Q16.16, pointing OUT of the solid */
+    int32_t  d;      /* plane offset along n, Q16.16                   */
+} Hx421Plane;
+
+#define HX421_MAX_PLANES   12u   /* per mesh; more is a hull, not a plane set */
+
 typedef struct {
     const Hx421Vec *verts;
     uint16_t        vcount;
@@ -60,6 +71,11 @@ typedef struct {
     int32_t         radius;     /* bounding sphere, Q16.16 — broad phase + cull */
     Hx421Vec        half;       /* OBB half-extents about `centre`, Q16.16      */
     Hx421Vec        centre;     /* box centre in model space (verts may be off-origin) */
+    /* Narrow-phase plane set. Storage belongs to the caller (see
+     * hx421_mesh_fit_planes), so the mesh holds no geometry it did not already
+     * hold. pcount == 0 means the narrow phase falls back to the box normal. */
+    const Hx421Plane *planes;
+    uint8_t           pcount;
 } Hx421Mesh;
 
 /* Derive radius, half-extents and centre from the vertex list. Call after
@@ -87,7 +103,12 @@ typedef struct {
     uint8_t    collidable;  /* considered by the collision sweep              */
     uint8_t    layer;       /* which layer THIS object belongs to (0..7)      */
     uint8_t    mask;        /* bitmask of layers this object collides WITH    */
+    /* Passthrough reports the hit and lets the object keep going — breakable
+     * scenery and trigger volumes both need it, and making it a FLAG rather
+     * than a separate path means they share one sweep with everything else. */
+    uint8_t    passthrough;
     Hx421Vec   pos;
+    Hx421Vec   vel;         /* world units per tick, Q16.16 — response input  */
     Hx421Mat   rot;
 } Hx421Object;
 
@@ -129,6 +150,7 @@ int      hx421_actor_spawn(Hx421Scene *s, int mask_id);            /* -> object 
 /* ---- ABSOLUTE: set state outright. Placement, teleports, authored keyframes. */
 void hx421_object_set_pos(Hx421Scene *s, int id, Hx421Vec p);
 void hx421_object_set_rot(Hx421Scene *s, int id, int32_t yaw, int32_t pitch, int32_t roll);
+void hx421_object_set_vel(Hx421Scene *s, int id, Hx421Vec v);
 
 /* ---- RELATIVE (integral): accumulate onto current state. Per-frame motion,
  * where making the caller track accumulated position or angle is exactly the

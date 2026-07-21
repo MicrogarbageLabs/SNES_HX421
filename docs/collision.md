@@ -77,8 +77,29 @@ straight onto them without consuming LEs.
 
 ## Deflection without per-polygon tests
 
-Each mesh carries a small set of **collision planes** (normal + distance), authored or derived at
-bake time — the large flat surfaces that matter for bouncing, not the full hull.
+Each mesh carries a small set of **collision planes** (normal + distance), **derived** at bake time —
+the large flat surfaces that matter for bouncing, not the full hull.
+
+**Built** (`hx421_mesh_fit_planes`, `hx421_narrowphase`, `hx421_resolve`). Derived rather than
+authored, like mesh bounds and sprite masks: a plane set that drifts from the geometry deflects off
+surfaces that are not where the picture says they are. Coplanar faces merge — with an **offset check
+as well as a normal check**, or the two opposite faces of a slab would merge into one plane and the
+far side would stop existing — and the set is ranked by area, so a cap smaller than the face count
+keeps the surfaces worth bouncing off and drops the slivers.
+
+### Pick the SHALLOWEST plane, not every plane in reach
+
+The obvious narrow phase is "test the mover's bounding sphere against each plane, keep the ones
+within radius". It is wrong, and the way it fails is instructive: a sphere big enough to touch a
+box's front face also reaches its four side faces, so a **flat face-on contact returns four or five
+normals**. The resolver then sees three independent contacts, calls it a wedge, and zeroes the
+velocity — so driving straight into a wall stops dead instead of bouncing.
+
+For a convex solid the contact face is the one the object has penetrated **least**. Ties within a
+small tolerance are genuine simultaneous contacts, which is precisely how an edge yields two normals
+and a corner three without any being invented. The suite asserts the exact counts (1 face-on,
+2 edge-on) rather than `>= 1`, because the weak assertion is what let this through in the first
+place.
 
 ### Contacts are a SET, not a winner
 

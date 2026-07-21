@@ -179,8 +179,10 @@ static int spawn_slot(Hx421Scene *s) {
         s->obj[i].collidable = 1;
         s->obj[i].layer = 0;
         s->obj[i].mask  = 0xFF;
+        s->obj[i].passthrough = 0;
         s->obj[i].mesh = 0;
         s->obj[i].mask_id = 0;
+        s->obj[i].vel.x = s->obj[i].vel.y = s->obj[i].vel.z = 0;
         s->obj[i].pos.x = s->obj[i].pos.y = s->obj[i].pos.z = 0;
         s->obj[i].rot = mat_identity();
         return (int)i;
@@ -229,6 +231,9 @@ void hx421_object_set_pos(Hx421Scene *s, int id, Hx421Vec p) {
 }
 void hx421_object_set_rot(Hx421Scene *s, int id, int32_t yaw, int32_t pitch, int32_t roll) {
     Hx421Object *o = obj_of(s, id); if (o) o->rot = mat_euler(yaw, pitch, roll);
+}
+void hx421_object_set_vel(Hx421Scene *s, int id, Hx421Vec v) {
+    Hx421Object *o = obj_of(s, id); if (o) o->vel = v;
 }
 
 /* ---- relative / integral ------------------------------------------------ */

@@ -203,6 +203,207 @@ int hx421_midphase(const Hx421Scene *s, Hx421ContactList *io) {
     return (int)keep;
 }
 
+/* ---- narrow phase: plane sets and deflection ---------------------------- */
+
+#define Q16_ONE 65536
+
+static Hx421Vec vsub3(Hx421Vec a, Hx421Vec b) { Hx421Vec r = {a.x-b.x, a.y-b.y, a.z-b.z}; return r; }
+static int32_t  dot16(Hx421Vec a, Hx421Vec b) {
+    return (int32_t)(((int64_t)a.x*b.x + (int64_t)a.y*b.y + (int64_t)a.z*b.z) >> 16);
+}
+static Hx421Vec cross16(Hx421Vec a, Hx421Vec b) {
+    Hx421Vec r;
+    r.x = (int32_t)(((int64_t)a.y*b.z - (int64_t)a.z*b.y) >> 16);
+    r.y = (int32_t)(((int64_t)a.z*b.x - (int64_t)a.x*b.z) >> 16);
+    r.z = (int32_t)(((int64_t)a.x*b.y - (int64_t)a.y*b.x) >> 16);
+    return r;
+}
+static Hx421Vec scale16(Hx421Vec v, int32_t s) {
+    Hx421Vec r;
+    r.x = (int32_t)(((int64_t)v.x * s) >> 16);
+    r.y = (int32_t)(((int64_t)v.y * s) >> 16);
+    r.z = (int32_t)(((int64_t)v.z * s) >> 16);
+    return r;
+}
+/* Length of a Q16.16 vector. Reduces to Q16.8 before squaring so three squares
+ * cannot overflow, exactly as the sphere test does. */
+static int32_t len16(Hx421Vec v) {
+    const int64_t x = v.x >> 8, y = v.y >> 8, z = v.z >> 8;
+    return hx421_sqrt_q16(x*x + y*y + z*z);
+}
+static int normalize16(Hx421Vec *v) {
+    const int32_t l = len16(*v);
+    if (l < 64) return 0;                 /* degenerate: no usable direction */
+    v->x = (int32_t)(((int64_t)v->x << 16) / l);
+    v->y = (int32_t)(((int64_t)v->y << 16) / l);
+    v->z = (int32_t)(((int64_t)v->z << 16) / l);
+    return 1;
+}
+
+unsigned hx421_mesh_fit_planes(Hx421Mesh *m, Hx421Plane *out, unsigned cap) {
+    if (!m || !out || !cap || !m->verts || !m->faces) return 0;
+    if (cap > HX421_MAX_PLANES) cap = HX421_MAX_PLANES;
+
+    Hx421Plane p[HX421_MAX_PLANES];
+    int64_t    area[HX421_MAX_PLANES];
+    unsigned   n = 0;
+
+    for (uint16_t f = 0; f < m->fcount; ++f) {
+        const Hx421Vec v0 = m->verts[m->faces[f*3+0]];
+        const Hx421Vec v1 = m->verts[m->faces[f*3+1]];
+        const Hx421Vec v2 = m->verts[m->faces[f*3+2]];
+        Hx421Vec nrm = cross16(vsub3(v1, v0), vsub3(v2, v0));
+        const int32_t twice_area = len16(nrm);      /* |cross| = 2 * area */
+        if (!normalize16(&nrm)) continue;           /* degenerate triangle */
+        const int32_t d = dot16(nrm, v0);
+
+        /* Merge coplanar faces: same normal within ~5 degrees AND the same
+         * offset. Without the offset check, the two opposite faces of a slab
+         * would merge into one plane and the far side would stop existing. */
+        unsigned hit = n;
+        for (unsigned k = 0; k < n; ++k) {
+            if (dot16(p[k].n, nrm) < 65100) continue;          /* ~5 deg */
+            int32_t dd = p[k].d - d; if (dd < 0) dd = -dd;
+            if (dd > (Q16_ONE / 64)) continue;
+            hit = k; break;
+        }
+        if (hit < n) { area[hit] += twice_area; continue; }
+        if (n < HX421_MAX_PLANES) { p[n].n = nrm; p[n].d = d; area[n] = twice_area; n++; }
+    }
+
+    /* Rank by area, keep the largest `cap`: the big flat surfaces are what a
+     * deflection should come off, and slivers only add near-duplicate normals
+     * for the dedup pass to throw away again. Selection sort — n <= 12. */
+    for (unsigned i = 0; i < n; ++i) {
+        unsigned best = i;
+        for (unsigned j = i + 1; j < n; ++j) if (area[j] > area[best]) best = j;
+        if (best != i) {
+            Hx421Plane tp = p[i]; p[i] = p[best]; p[best] = tp;
+            int64_t ta = area[i]; area[i] = area[best]; area[best] = ta;
+        }
+    }
+    if (n > cap) n = cap;
+    for (unsigned i = 0; i < n; ++i) out[i] = p[i];
+    m->planes = out;
+    m->pcount = (uint8_t)n;
+    return n;
+}
+
+/* Rotate a model-space vector into world space with a Q15 matrix. */
+static Hx421Vec rot_apply(Hx421Mat m, Hx421Vec v) {
+    Hx421Vec r;
+    r.x = (int32_t)(((int64_t)m.m[0]*v.x + (int64_t)m.m[1]*v.y + (int64_t)m.m[2]*v.z) >> 15);
+    r.y = (int32_t)(((int64_t)m.m[3]*v.x + (int64_t)m.m[4]*v.y + (int64_t)m.m[5]*v.z) >> 15);
+    r.z = (int32_t)(((int64_t)m.m[6]*v.x + (int64_t)m.m[7]*v.y + (int64_t)m.m[8]*v.z) >> 15);
+    return r;
+}
+
+int hx421_narrowphase(const Hx421Scene *s, Hx421ContactList *io) {
+    if (!s || !io) return 0;
+    for (unsigned k = 0; k < io->count; ++k) {
+        Hx421Contact *c = &io->c[k];
+        c->nnormals = 0;
+        if (c->kind != HX421_BODY_MESH) continue;
+
+        const Hx421Object *a = &s->obj[c->a], *b = &s->obj[c->b];
+        const Hx421Mesh *mb = &s->mesh[b->mesh];
+        const int32_t ra = s->mesh[a->mesh].radius;
+
+        /* a's centre relative to b, in b's model frame: transpose is the inverse
+         * of a rotation, so no general matrix inverse is needed. */
+        const Hx421Vec w = vsub3(a->pos, b->pos);
+        Hx421Mat bt;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) bt.m[i*3+j] = b->rot.m[j*3+i];
+        const Hx421Vec lp = rot_apply(bt, w);
+
+        /* Pick the SHALLOWEST plane(s), not every plane the sphere reaches.
+         *
+         * Testing |dist| < radius against each plane independently is the
+         * obvious formulation and it is wrong: a sphere big enough to touch the
+         * front face of a box also reaches its side faces, so a flat face-on
+         * contact comes back with four or five normals. The resolver then sees
+         * three independent contacts, calls it a wedge, and ZEROES the velocity
+         * — driving straight into a wall stops dead instead of bouncing.
+         *
+         * For a convex solid the contact face is the one the object has
+         * penetrated LEAST. Ties inside a small tolerance are genuine
+         * simultaneous contacts, which is exactly how an edge gives two normals
+         * and a corner three, without any of them being invented. */
+        int32_t best = -0x7FFFFFFF;
+        for (unsigned pi = 0; pi < mb->pcount; ++pi) {
+            const int32_t dist = dot16(mb->planes[pi].n, lp) - mb->planes[pi].d;
+            if (dist > best) best = dist;
+        }
+        if (mb->pcount && best <= ra) {
+            const int32_t tol = ra / 8;
+            for (unsigned pi = 0; pi < mb->pcount && c->nnormals < HX421_MAX_NORMALS; ++pi) {
+                const int32_t dist = dot16(mb->planes[pi].n, lp) - mb->planes[pi].d;
+                if (dist < best - tol) continue;
+                c->normals[c->nnormals++] = rot_apply(b->rot, mb->planes[pi].n);
+            }
+        }
+        /* Always at least one normal, so a caller never has to special-case a
+         * contact that carries none. */
+        if (!c->nnormals) { c->normals[0] = c->normal; c->nnormals = 1; }
+    }
+    return (int)io->count;
+}
+
+int hx421_resolve(const Hx421Vec *normals, unsigned n, Hx421Vec v,
+                  Hx421Response mode, Hx421Vec *out) {
+    Hx421Vec keep[HX421_MAX_NORMALS];
+    unsigned nk = 0;
+
+    /* 1. Dedup within ~15 degrees. cos(15) = 0.9659 -> 63303 in Q16.16. An
+     *    approximated curve is several planes with nearly the same normal;
+     *    applying each in turn multiplies one correction and launches the
+     *    object. */
+    for (unsigned i = 0; i < n && nk < HX421_MAX_NORMALS; ++i) {
+        Hx421Vec ni = normals[i];
+        if (!normalize16(&ni)) continue;
+        unsigned dup = 0;
+        for (unsigned j = 0; j < nk; ++j) if (dot16(keep[j], ni) > 63303) { dup = 1; break; }
+        if (!dup) keep[nk++] = ni;
+    }
+    if (!nk) { if (out) *out = v; return 1; }
+
+    /* 2. Orthogonalise (Gram-Schmidt). Two walls at a right angle are already
+     *    orthogonal and pass through untouched; oblique ones stop double-
+     *    counting their shared component. */
+    unsigned no = 0;
+    Hx421Vec ortho[HX421_MAX_NORMALS];
+    for (unsigned i = 0; i < nk; ++i) {
+        Hx421Vec e = keep[i];
+        for (unsigned j = 0; j < no; ++j) {
+            const int32_t pr = dot16(e, ortho[j]);
+            const Hx421Vec sub = scale16(ortho[j], pr);
+            e.x -= sub.x; e.y -= sub.y; e.z -= sub.z;
+        }
+        if (normalize16(&e)) ortho[no++] = e;      /* wholly dependent -> drop */
+    }
+
+    /* 3. Three or more independent contacts is a WEDGE: any reflection just
+     *    re-penetrates something, so stop rather than resolve. */
+    if (no >= 3) {
+        if (out) { out->x = out->y = out->z = 0; }
+        return 0;
+    }
+
+    /* 4. Reflect against all of them at once. For right-angle walls — the
+     *    common case — this is exact, and it costs one dot and one scaled
+     *    subtract per contact, the same as resolving them one at a time. */
+    const int32_t k = (mode == HX421_RESPONSE_BOUNCE) ? 2 : 1;
+    Hx421Vec r = v;
+    for (unsigned i = 0; i < no; ++i) {
+        const int32_t pr = dot16(v, ortho[i]);
+        const Hx421Vec sub = scale16(ortho[i], pr * k);
+        r.x -= sub.x; r.y -= sub.y; r.z -= sub.z;
+    }
+    if (out) *out = r;
+    return 1;
+}
+
 /* A mask actor's position is Q16.16 SCREEN PIXELS; the mask maths is integer. */
 static int px_of(int32_t q) { return (int)(q >> 16); }
 

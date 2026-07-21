@@ -25,6 +25,10 @@
 #include "hx421_scene3d.h"
 
 #define HX421_MAX_CONTACTS  64u
+/* Cap on simultaneous contact planes. More than four surfaces at once is a
+ * wedge, not a corner, and the response for a wedge is to stop rather than to
+ * resolve — so collecting more would not change the answer. */
+#define HX421_MAX_NORMALS    4u
 
 /* One overlapping pair. `normal` points from a toward b and is the direction
  * that separates them; `depth` is how far they interpenetrate.
@@ -46,6 +50,16 @@ typedef struct {
      * from the AABB would put impact effects on the wrong edge of concave art,
      * so normal/depth stay zero and the point is the answer. */
     int16_t  px, py;
+
+    /* NARROW phase output: the contact SET, in world space.
+     *
+     * A set rather than a winner. Picking the single plane that most opposes the
+     * velocity is wrong wherever two surfaces meet: the object reflects off one
+     * wall straight into the other, then back into the first. The symptom is
+     * jitter in corners, or tunnelling through the seam — and corners are
+     * exactly where players drive into walls. */
+    Hx421Vec normals[HX421_MAX_NORMALS];
+    uint8_t  nnormals;
 } Hx421Contact;
 
 typedef struct {
@@ -107,6 +121,49 @@ int hx421_midphase(const Hx421Scene *s, Hx421ContactList *io);
 int hx421_obb_test(Hx421Vec pa, Hx421Mat ra, Hx421Vec ha,
                    Hx421Vec pb, Hx421Mat rb, Hx421Vec hb,
                    Hx421Vec *normal, int32_t *depth);
+
+/* Derive a mesh's collision plane set from its faces and write it into `out`.
+ * Sets m->planes / m->pcount on success and returns the plane count.
+ *
+ * DERIVED, not authored, for the same reason mesh bounds and sprite masks are:
+ * a plane set that drifts from the geometry deflects off surfaces that are not
+ * where the picture says they are. Coplanar faces merge into one plane, and the
+ * set is ranked by area so a `cap` smaller than the face count keeps the large
+ * flat surfaces that matter for bouncing and drops the slivers that do not. */
+unsigned hx421_mesh_fit_planes(Hx421Mesh *m, Hx421Plane *out, unsigned cap);
+
+/* NARROW PHASE: fill each mesh contact's `normals` set.
+ *
+ * Tests object a's bounding sphere against object b's planes in world space —
+ * a handful of dot products per pair, never a per-polygon sweep. A mesh with no
+ * plane set falls back to the single mid-phase box normal, so a contact always
+ * carries at least one normal. Mask pairs are untouched. Returns the contact
+ * count (the narrow phase refines, it does not cull). */
+int hx421_narrowphase(const Hx421Scene *s, Hx421ContactList *io);
+
+typedef enum {
+    HX421_RESPONSE_BOUNCE = 0,  /* reverse the into-surface component (x2) */
+    HX421_RESPONSE_SLIDE        /* merely remove it (x1) — character controllers */
+} Hx421Response;
+
+/* Resolve a velocity against a contact set.
+ *
+ *   v' = v - k * SUM_i (v . n_i) n_i        k = 2 bounce, 1 slide
+ *
+ * Deduplicates normals within ~15 degrees first: a curved surface approximated
+ * by several planes would otherwise apply nearly the same correction repeatedly
+ * and launch the object. What survives is orthogonalised, so two walls meeting
+ * at a right angle resolve exactly, at the same cost as one reflection each.
+ *
+ * Returns 1 on a resolved velocity. Returns 0 for WEDGED — three or more
+ * independent contacts after dedup — and writes zero, because any reflection
+ * there just re-penetrates something. One contact reduces to the plain
+ * v - 2(v.n)n, so the degenerate cases need no special-casing by the caller.
+ *
+ * The coprocessor returns this as a convenience; the normal SET is the source of
+ * truth, since bounce-vs-slide-vs-stop is game logic rather than geometry. */
+int hx421_resolve(const Hx421Vec *normals, unsigned n, Hx421Vec v,
+                  Hx421Response mode, Hx421Vec *out);
 
 /* Sphere-vs-sphere for one pair, exposed so a caller can re-test a specific
  * pair without a full sweep (and so the test suite can check the maths
