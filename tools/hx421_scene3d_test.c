@@ -153,6 +153,72 @@ int main(void) {
      * that rather than merely non-zero. */
     ck((maxx - minx) > 16*HX421_ONE, "cube projects at a plausible pixel size");
 
+    /* ---- pixel aspect ----
+     * SNES pixels are ~1.167x wider than tall (8:7 on a 4:3 display), so a
+     * world-space cube must project NARROWER in pixels than it is tall for it to
+     * look square on the TV. Asserting equal pixel extents would enforce exactly
+     * the distortion this corrects — the check has to be in physical space. */
+    {
+        int32_t miny = 1<<30, maxy = -(1<<30);
+        for (int i = 0; i < n; ++i)
+            for (int k = 0; k < 3; ++k) {
+                if (tris[i].v[k].y < miny) miny = tris[i].v[k].y;
+                if (tris[i].v[k].y > maxy) maxy = tris[i].v[k].y;
+            }
+        const int32_t wpx = maxx - minx, hpx = maxy - miny;
+        ck(wpx < hpx, "a cube spans fewer pixels across than down");
+        /* physical width = wpx * PAR; should match the height within a few % */
+        const int32_t phys_w = (int32_t)(((int64_t)wpx * HX421_PAR_SNES) >> 16);
+        const int32_t err = (phys_w > hpx ? phys_w - hpx : hpx - phys_w);
+        ck(err * 20 < hpx, "and is square once the pixel aspect is applied");
+
+        /* square-pixel output must fall back to equal extents */
+        hx421_camera_set_par(s, cam, HX421_PAR_SQUARE);
+        n = hx421_scene_render(s, tris, HX421_MAX_TRIS, 256, 208);
+        int32_t mny = 1<<30, mxy = -(1<<30), mnx = 1<<30, mxx = -(1<<30);
+        for (int i = 0; i < n; ++i)
+            for (int k = 0; k < 3; ++k) {
+                if (tris[i].v[k].y < mny) mny = tris[i].v[k].y;
+                if (tris[i].v[k].y > mxy) mxy = tris[i].v[k].y;
+                if (tris[i].v[k].x < mnx) mnx = tris[i].v[k].x;
+                if (tris[i].v[k].x > mxx) mxx = tris[i].v[k].x;
+            }
+        const int32_t d = (mxx-mnx) > (mxy-mny) ? (mxx-mnx)-(mxy-mny) : (mxy-mny)-(mxx-mnx);
+        ck(d * 20 < (mxy - mny), "square pixels give equal pixel extents");
+        hx421_camera_set_par(s, cam, HX421_PAR_SNES);
+    }
+
+    /* ---- field of view ---- */
+    {
+        hx421_camera_set_fov_preset(s, cam, HX421_FOV_NORMAL, 240);
+        const int32_t fx_norm = s->cam[cam].focal_x;
+        const int32_t fy_norm = s->cam[cam].focal_y;
+        ck(fy_norm > fx_norm, "the aspect correction survives a FOV change");
+
+        hx421_camera_set_fov_preset(s, cam, HX421_FOV_NARROW, 240);
+        ck(s->cam[cam].focal_x > fx_norm, "a narrower FOV is a longer focal length");
+        hx421_camera_set_fov_preset(s, cam, HX421_FOV_VERY_WIDE, 240);
+        ck(s->cam[cam].focal_x < fx_norm, "a wider FOV is a shorter focal length");
+
+        /* 90 degrees on a 240-wide screen must give focal == half the width,
+         * which is the one value that can be checked by hand. */
+        ck_near(s->cam[cam].focal_x, 120 * ONE, ONE, "90 deg -> focal = half width");
+
+        /* the aspect ratio must be PRESERVED across FOV changes, not recomputed
+         * from the new focal_x against the stale focal_y */
+        const int32_t par_now = (int32_t)(((int64_t)s->cam[cam].focal_y << 16)
+                                          / s->cam[cam].focal_x);
+        ck_near(par_now, HX421_PAR_SNES, 600, "FOV changes preserve the pixel aspect");
+
+        /* degenerate inputs must not produce a zero focal (a collapsed scene) */
+        hx421_camera_set_fov(s, cam, 0, 240);
+        ck(s->cam[cam].focal_x > 0, "a zero FOV is clamped, not accepted");
+        hx421_camera_set_fov(s, cam, 5000, 240);
+        ck(s->cam[cam].focal_x > 0, "an absurd FOV is clamped, not accepted");
+
+        hx421_camera_set_fov_preset(s, cam, HX421_FOV_NORMAL, 240);
+    }
+
     /* Perspective: the near face must project WIDER than the far face. A bug
      * that drops the divide entirely still passes an on-screen check.
      * Split on the observed midpoint rather than a magic depth — a hardcoded

@@ -2097,9 +2097,26 @@ static void hx_r3d_init(void) {
                        (int32_t)((seed >> 14) % 1200u) - 600 };
         hx421_object_set_vel(&g_r3d_scene, g_r3d_obj[i], v);
     }
-    /* focal is in PIXELS: 120 on a 240-wide screen is a 90-degree FOV. */
     Hx421Vec cpos = { 0, 0, -9 * 65536 };
-    int cam = hx421_camera_register(&g_r3d_scene, cpos, 120 * 65536);
+    int cam = hx421_camera_register(&g_r3d_scene, cpos, 0);
+    /* 60 degrees rather than the old 90: a wide lens stretches everything near
+     * the screen edge, which on top of the uncorrected pixel aspect was most of
+     * why the cubes read as bricks. The camera carries the SNES 8:7 pixel aspect
+     * by default, so geometry is square on a 4:3 TV without asking. */
+    hx421_camera_set_fov_preset(&g_r3d_scene, cam, HX421_FOV_NORMAL,
+                                (int)(R3D_TILES_W * 8u));
+    {
+        const char *fv = getenv("HX421_3D_FOV");
+        if (fv) {
+            long deg = strtol(fv, NULL, 0);
+            if (deg >= 15 && deg <= 160)
+                hx421_camera_set_fov(&g_r3d_scene, cam, (int32_t)(deg * 1024 / 360),
+                                     (int)(R3D_TILES_W * 8u));
+            else fprintf(stderr, "hx421 3d: ignoring HX421_3D_FOV=%s (want 15..160)\n", fv);
+        }
+        const char *sq = getenv("HX421_3D_SQUARE_PIXELS");
+        if (sq) hx421_camera_set_par(&g_r3d_scene, cam, HX421_PAR_SQUARE);
+    }
     hx421_camera_set_active(&g_r3d_scene, cam);
 
     hx421_build_solid_tiles(g_r3d_solid);

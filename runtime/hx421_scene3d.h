@@ -118,10 +118,16 @@ typedef struct {
     Hx421Mat   rot;
     /* Focal length in PIXELS, Q16.16 — not world units. A point one world unit
      * off-axis at one unit of depth projects `focal` pixels from the centre, so
-     * focal == half the screen width is a 90-degree horizontal field of view.
+     * focal_x == half the screen width is a 90-degree horizontal field of view.
      * Seeding it with a world-scale number (5 rather than 128) shrinks the whole
-     * scene to a few pixels, which reads as "nothing is being drawn". */
-    int32_t    focal;
+     * scene to a few pixels, which reads as "nothing is being drawn".
+     *
+     * SEPARATE PER AXIS because SNES pixels are not square: a 256x224 frame on a
+     * 4:3 display gives an 8:7 pixel aspect, so pixels are ~1.167x wider than
+     * tall. One focal for both axes renders every cube 1.167x too wide — a
+     * world-space cube arrives on screen as a brick. focal_y carries the
+     * correction (see hx421_camera_set_par). */
+    int32_t    focal_x, focal_y;
 } Hx421Camera;
 
 typedef struct {
@@ -164,8 +170,38 @@ void hx421_object_rotate(Hx421Scene *s, int id, int32_t dyaw, int32_t dpitch, in
  * everything except aircraft wants. */
 void hx421_object_point_at(Hx421Scene *s, int id, Hx421Vec target, int roll_lock);
 
+/* ---- field of view --------------------------------------------------------
+ *
+ * Pixel aspect ratio: physical pixel width / height, Q16.16. The SNES value is
+ * the default on every camera, so correct geometry is what you get without
+ * asking; square-pixel output (a PC preview window) needs HX421_PAR_SQUARE. */
+#define HX421_PAR_SNES    76800    /* 8:7 — 256x224 on a 4:3 display */
+#define HX421_PAR_SQUARE  65536    /* 1:1 */
+
+/* Named fields of view, because "what focal length looks right" is not a
+ * question a game should have to answer. Horizontal, since that is the axis a
+ * player judges speed by. */
+typedef enum {
+    HX421_FOV_NARROW = 0,   /* ~40 deg — long lens; least edge distortion   */
+    HX421_FOV_NORMAL,       /* ~60 deg — the safe default for most scenes   */
+    HX421_FOV_WIDE,         /* ~75 deg — fast movement, strong perspective  */
+    HX421_FOV_VERY_WIDE     /* ~90 deg — dramatic, noticeably stretched     */
+} Hx421FovPreset;
+
+/* Set the horizontal FOV; focal lengths and the aspect correction follow.
+ * `hfov` is in the same 1024-step turn used everywhere else (1024 = full turn,
+ * so 60 degrees = 171). `screen_w` is the render width in pixels. */
+void hx421_camera_set_fov(Hx421Scene *s, int id, int32_t hfov, int screen_w);
+void hx421_camera_set_fov_preset(Hx421Scene *s, int id, Hx421FovPreset p, int screen_w);
+
+/* Change the pixel aspect ratio, recomputing focal_y from focal_x. Setting this
+ * does NOT change the horizontal field of view — only how tall things look. */
+void hx421_camera_set_par(Hx421Scene *s, int id, int32_t par);
+
 /* ---- cameras: same vocabulary, several registered, one active ---- */
-int  hx421_camera_register(Hx421Scene *s, Hx421Vec pos, int32_t focal);  /* -> cam id */
+/* `focal_x` is in PIXELS (0 for a sensible default). focal_y is derived from
+ * the SNES pixel aspect; call hx421_camera_set_fov for the friendlier route. */
+int  hx421_camera_register(Hx421Scene *s, Hx421Vec pos, int32_t focal_x);  /* -> cam id */
 void hx421_camera_set_active(Hx421Scene *s, int id);
 void hx421_camera_set_pos(Hx421Scene *s, int id, Hx421Vec p);
 void hx421_camera_translate(Hx421Scene *s, int id, Hx421Vec d);

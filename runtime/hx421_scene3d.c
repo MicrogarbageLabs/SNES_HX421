@@ -279,17 +279,60 @@ void hx421_object_point_at(Hx421Scene *s, int id, Hx421Vec target, int roll_lock
 
 /* ---- cameras ------------------------------------------------------------ */
 
-int hx421_camera_register(Hx421Scene *s, Hx421Vec pos, int32_t focal) {
+/* focal_y = focal_x * par. Pixels wider than tall means a shape needs FEWER
+ * pixels across than down to look square, so the vertical focal is the larger. */
+static void cam_apply_par(Hx421Camera *c, int32_t par) {
+    c->focal_y = (int32_t)(((int64_t)c->focal_x * par) >> 16);
+}
+
+int hx421_camera_register(Hx421Scene *s, Hx421Vec pos, int32_t focal_x) {
     if (!s) return -1;
     for (unsigned i = 0; i < HX421_MAX_CAM; ++i) {
         if (s->cam[i].active) continue;
         s->cam[i].active = 1; s->cam[i].pos = pos;
         s->cam[i].rot = mat_identity();
         /* Default: 128 px, a 90-degree FOV on a 256-wide screen. In PIXELS. */
-        s->cam[i].focal = focal ? focal : (128 << 16);
+        s->cam[i].focal_x = focal_x ? focal_x : (128 << 16);
+        cam_apply_par(&s->cam[i], HX421_PAR_SNES);
         return (int)i;
     }
     return -1;
+}
+
+void hx421_camera_set_par(Hx421Scene *s, int id, int32_t par) {
+    Hx421Camera *c = cam_of(s, id);
+    if (c && par > 0) cam_apply_par(c, par);
+}
+
+void hx421_camera_set_fov(Hx421Scene *s, int id, int32_t hfov, int screen_w) {
+    Hx421Camera *c = cam_of(s, id);
+    if (!c || screen_w <= 0) return;
+    /* Clamp well short of a half turn: tan runs to infinity at 90 degrees of
+     * HALF-angle, and a focal length of zero collapses the scene to a point. */
+    if (hfov < 8)   hfov = 8;
+    if (hfov > 460) hfov = 460;         /* ~162 degrees */
+
+    const int32_t half = hfov / 2;
+    const int32_t sn = hx421_sin_q15(half), cs = hx421_cos_q15(half);
+    if (sn <= 0) return;
+    /* tan = sin/cos in Q16.16, then focal = (w/2) / tan. */
+    const int32_t tan_q16 = (int32_t)(((int64_t)sn << 16) / (cs ? cs : 1));
+    if (tan_q16 <= 0) return;
+
+    /* Read the current aspect BEFORE overwriting focal_x — deriving it from the
+     * new focal_x and the old focal_y would silently change the aspect every
+     * time the field of view moved. */
+    const int32_t par = c->focal_x ? (int32_t)(((int64_t)c->focal_y << 16) / c->focal_x)
+                                   : HX421_PAR_SNES;
+    c->focal_x = (int32_t)((((int64_t)(screen_w / 2)) << 32) / tan_q16);
+    cam_apply_par(c, par > 0 ? par : HX421_PAR_SNES);
+}
+
+void hx421_camera_set_fov_preset(Hx421Scene *s, int id, Hx421FovPreset p, int screen_w) {
+    /* degrees * 1024 / 360 */
+    static const int32_t deg[4] = { 114, 171, 213, 256 };   /* 40, 60, 75, 90 */
+    const unsigned i = (unsigned)p < 4u ? (unsigned)p : 1u;
+    hx421_camera_set_fov(s, id, deg[i], screen_w);
 }
 void hx421_camera_set_active(Hx421Scene *s, int id) {
     if (s && id >= 0 && id < (int)HX421_MAX_CAM) s->active_cam = (uint8_t)id;
@@ -360,8 +403,10 @@ int hx421_scene_render(const Hx421Scene *s, Hx421Tri *out, int max,
                  * Q16.16, so shift into HX421_SUBPX BEFORE adding the centre —
                  * the two are different fixed-point scales and mixing them puts
                  * the whole scene off by a factor of 256. */
-                const int64_t sx = ((int64_t)vv.x * cam->focal) / vv.z;
-                const int64_t sy = ((int64_t)vv.y * cam->focal) / vv.z;
+                /* Separate focal per axis: the divide by z is shared, only the
+                 * numerator differs, so the aspect correction is free. */
+                const int64_t sx = ((int64_t)vv.x * cam->focal_x) / vv.z;
+                const int64_t sy = ((int64_t)vv.y * cam->focal_y) / vv.z;
                 t.v[k].x = cx + (int32_t)(sx >> (16 - HX421_SUBPX));
                 t.v[k].y = cy - (int32_t)(sy >> (16 - HX421_SUBPX));
 

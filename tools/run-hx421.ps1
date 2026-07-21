@@ -48,6 +48,11 @@ param(
     [int]$ThreeDCubes,     # how many cubes in the 3D demo ($HX421_3D_CUBES, default 6).
                            # 1 = 60 fps, 8 = ~31 fps, 24 = ~23 fps. This is the knob
                            # that makes "complexity costs TIME" visible on screen.
+    [int]$ThreeDFov,       # horizontal field of view in DEGREES ($HX421_3D_FOV, 15..160;
+                           # default 60). Wider = more dramatic and more edge stretch.
+    [switch]$SquarePixels, # render for a square-pixel display instead of the SNES 8:7
+                           # ($HX421_3D_SQUARE_PIXELS). Correct geometry on a 4:3 TV is
+                           # the DEFAULT; use this only for a square-pixel capture.
     [int]$ThreeDBurst      # override the per-burst CHR budget ($HX421_3D_BURST).
                            # The demo scene fits ONE burst at the real 6144 B, so
                            # the multi-burst flip never runs; drop this to ~3000 to
@@ -138,6 +143,18 @@ if ($ThreeD) {
     } else {
         Remove-Item Env:\HX421_3D_CUBES -ErrorAction SilentlyContinue
     }
+    if ($ThreeDFov -gt 0) {
+        $env:HX421_3D_FOV = "$ThreeDFov"
+        Write-Step "HX421_3D_FOV=$ThreeDFov degrees"
+    } else {
+        Remove-Item Env:\HX421_3D_FOV -ErrorAction SilentlyContinue
+    }
+    if ($SquarePixels) {
+        $env:HX421_3D_SQUARE_PIXELS = "1"
+        Write-Step "HX421_3D_SQUARE_PIXELS=1 (geometry will look WIDE on a 4:3 TV)"
+    } else {
+        Remove-Item Env:\HX421_3D_SQUARE_PIXELS -ErrorAction SilentlyContinue
+    }
     if ($ThreeDBurst -gt 0) {
         $env:HX421_3D_BURST = "$ThreeDBurst"
         Write-Step "HX421_3D_BURST=$ThreeDBurst B/burst (forces the multi-burst flip path)"
@@ -148,6 +165,8 @@ if ($ThreeD) {
     Remove-Item Env:\HX421_3D -ErrorAction SilentlyContinue
     Remove-Item Env:\HX421_3D_BURST -ErrorAction SilentlyContinue
     Remove-Item Env:\HX421_3D_CUBES -ErrorAction SilentlyContinue
+    Remove-Item Env:\HX421_3D_FOV -ErrorAction SilentlyContinue
+    Remove-Item Env:\HX421_3D_SQUARE_PIXELS -ErrorAction SilentlyContinue
 }
 
 # Repo root = parent of the dir holding this script (SNES_HX_421).
