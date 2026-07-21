@@ -175,7 +175,7 @@ void hx421_object_point_at(Hx421Scene *s, int id, Hx421Vec target, int roll_lock
  * Pixel aspect ratio: physical pixel width / height, Q16.16. The SNES value is
  * the default on every camera, so correct geometry is what you get without
  * asking; square-pixel output (a PC preview window) needs HX421_PAR_SQUARE. */
-#define HX421_PAR_SNES    76800    /* 8:7 — 256x224 on a 4:3 display */
+#define HX421_PAR_SNES    74898    /* 8:7 = 1.142857 (bsnes uses 54/47, 0.4% off) */
 #define HX421_PAR_SQUARE  65536    /* 1:1 */
 
 /* Named fields of view, because "what focal length looks right" is not a
@@ -197,6 +197,34 @@ void hx421_camera_set_fov_preset(Hx421Scene *s, int id, Hx421FovPreset p, int sc
 /* Change the pixel aspect ratio, recomputing focal_y from focal_x. Setting this
  * does NOT change the horizontal field of view — only how tall things look. */
 void hx421_camera_set_par(Hx421Scene *s, int id, int32_t par);
+
+/* ---- FRAMING: say what you want on screen, not what lens to use -----------
+ *
+ * A field of view alone does not tell you what is VISIBLE. Correcting the pixel
+ * aspect makes focal_y larger, so the vertical field of view is NARROWER than
+ * the horizontal one — set a 60-degree hfov and things near the top and bottom
+ * of the world silently leave the frame. Framing in world units is the honest
+ * way to ask the question, and it survives changes to aspect, resolution and
+ * letterboxing without the caller re-deriving anything.
+ *
+ * "How many world units span the full screen at this depth." */
+void hx421_camera_frame_width(Hx421Scene *s, int id, int32_t world_w,
+                              int32_t depth, int screen_w);
+void hx421_camera_frame_height(Hx421Scene *s, int id, int32_t world_h,
+                               int32_t depth, int screen_h);
+
+/* Set the field of view so a world-space box of half-extents `half` fits in
+ * BOTH axes at `depth`. This is the one to reach for when the answer is "all of
+ * it should be on screen". */
+void hx421_camera_frame_box(Hx421Scene *s, int id, Hx421Vec half,
+                            int32_t depth, int screen_w, int screen_h);
+
+/* Keep the current lens and MOVE instead: pull the camera back along its own
+ * forward axis until the box centred at `centre` fits the frame. Returns the
+ * distance chosen. Use this when the FOV is an artistic choice and the framing
+ * still has to be guaranteed. */
+int32_t hx421_camera_fit_box(Hx421Scene *s, int id, Hx421Vec centre,
+                             Hx421Vec half, int screen_w, int screen_h);
 
 /* ---- cameras: same vocabulary, several registered, one active ---- */
 /* `focal_x` is in PIXELS (0 for a sensible default). focal_y is derived from

@@ -2117,6 +2117,22 @@ static void hx_r3d_init(void) {
         const char *sq = getenv("HX421_3D_SQUARE_PIXELS");
         if (sq) hx421_camera_set_par(&g_r3d_scene, cam, HX421_PAR_SQUARE);
     }
+    /* Keep the chosen lens, but MOVE the camera until the whole arena fits.
+     * Correcting the pixel aspect narrows the vertical field of view, so a fixed
+     * camera distance that framed everything at 90 degrees quietly dropped cubes
+     * off the top and bottom at 60. Framing in world units is immune to that —
+     * and to later changes in FOV, resolution or letterboxing. */
+    {
+        const Hx421Vec centre = { 0, 0, 0 };
+        /* arena plus one cube half-extent, so a cube AT the wall is still whole */
+        const Hx421Vec half = { R3D_ARENA_X + 65536, R3D_ARENA_Y + 65536,
+                                R3D_ARENA_Z + 65536 };
+        const int32_t d = hx421_camera_fit_box(&g_r3d_scene, cam, centre, half,
+                                               (int)(R3D_TILES_W * 8u),
+                                               (int)(R3D_TILES_H * 8u));
+        fprintf(stderr, "hx421 3d: camera framed at %.2f world units to fit the arena\n",
+                d / 65536.0);
+    }
     hx421_camera_set_active(&g_r3d_scene, cam);
 
     hx421_build_solid_tiles(g_r3d_solid);

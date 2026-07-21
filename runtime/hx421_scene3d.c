@@ -371,6 +371,90 @@ void hx421_camera_set_fov(Hx421Scene *s, int id, int32_t hfov, int screen_w) {
     cam_apply_par(c, par > 0 ? par : HX421_PAR_SNES);
 }
 
+/* focal = (screen_px / 2) / (world_half / depth) = screen_px * depth / world */
+static int32_t focal_for_span(int screen_px, int32_t world, int32_t depth) {
+    if (world <= 0 || depth <= 0 || screen_px <= 0) return 0;
+    return (int32_t)((((int64_t)screen_px * depth) << 16) / world);
+}
+
+void hx421_camera_frame_width(Hx421Scene *s, int id, int32_t world_w,
+                              int32_t depth, int screen_w) {
+    Hx421Camera *c = cam_of(s, id);
+    if (!c) return;
+    const int32_t f = focal_for_span(screen_w, world_w, depth);
+    if (f <= 0) return;
+    const int32_t par = c->focal_x ? (int32_t)(((int64_t)c->focal_y << 16) / c->focal_x)
+                                   : HX421_PAR_SNES;
+    c->focal_x = f;
+    cam_apply_par(c, par > 0 ? par : HX421_PAR_SNES);
+}
+
+void hx421_camera_frame_height(Hx421Scene *s, int id, int32_t world_h,
+                               int32_t depth, int screen_h) {
+    Hx421Camera *c = cam_of(s, id);
+    if (!c) return;
+    const int32_t fy = focal_for_span(screen_h, world_h, depth);
+    if (fy <= 0) return;
+    /* Height is specified, so focal_y is the known quantity and focal_x follows
+     * by dividing out the pixel aspect — the reverse of the usual direction. */
+    const int32_t par = c->focal_x ? (int32_t)(((int64_t)c->focal_y << 16) / c->focal_x)
+                                   : HX421_PAR_SNES;
+    const int32_t use = par > 0 ? par : HX421_PAR_SNES;
+    c->focal_y = fy;
+    c->focal_x = (int32_t)(((int64_t)fy << 16) / use);
+}
+
+void hx421_camera_frame_box(Hx421Scene *s, int id, Hx421Vec half,
+                            int32_t depth, int screen_w, int screen_h) {
+    Hx421Camera *c = cam_of(s, id);
+    if (!c) return;
+    const int32_t par = c->focal_x ? (int32_t)(((int64_t)c->focal_y << 16) / c->focal_x)
+                                   : HX421_PAR_SNES;
+    const int32_t use = par > 0 ? par : HX421_PAR_SNES;
+
+    /* Nearest face of the box, not its centre: a box at depth d extends to
+     * d - hz, where it subtends the largest angle. Framing on the centre puts
+     * the near corners outside the screen, which is precisely the "one cube went
+     * missing" failure. */
+    int32_t near = depth - half.z;
+    if (near < (1 << 14)) near = 1 << 14;
+
+    const int32_t fx_w = focal_for_span(screen_w, half.x * 2, near);
+    const int32_t fy_h = focal_for_span(screen_h, half.y * 2, near);
+    const int32_t fx_h = fy_h > 0 ? (int32_t)(((int64_t)fy_h << 16) / use) : 0;
+
+    /* Smaller focal = wider view. Take the wider of the two requirements so
+     * BOTH axes fit; taking the average or just the horizontal is how one axis
+     * ends up quietly cropped. */
+    int32_t fx = fx_w;
+    if (fx_h > 0 && fx_h < fx) fx = fx_h;
+    if (fx <= 0) return;
+    c->focal_x = fx;
+    cam_apply_par(c, use);
+}
+
+int32_t hx421_camera_fit_box(Hx421Scene *s, int id, Hx421Vec centre,
+                             Hx421Vec half, int screen_w, int screen_h) {
+    Hx421Camera *c = cam_of(s, id);
+    if (!c || screen_w <= 0 || screen_h <= 0) return 0;
+
+    /* d such that half.x * focal_x / d = screen_w/2, and the same vertically.
+     * Take whichever needs more distance, then step back by half.z so the near
+     * face is what fits rather than the centre. */
+    const int64_t dx = (((int64_t)half.x * c->focal_x) >> 16) / (screen_w / 2);
+    const int64_t dy = (((int64_t)half.y * c->focal_y) >> 16) / (screen_h / 2);
+    int64_t d = (dx > dy ? dx : dy) + half.z;
+    if (d < (1 << 16)) d = 1 << 16;                 /* never sit inside the box */
+
+    /* Back off along the camera's OWN forward axis, so this works for a camera
+     * that has been rotated rather than only an axis-aligned one. */
+    const Hx421Vec fwd = { c->rot.m[2], c->rot.m[5], c->rot.m[8] };   /* R * +z */
+    c->pos.x = centre.x - (int32_t)(((int64_t)fwd.x * d) >> 15);
+    c->pos.y = centre.y - (int32_t)(((int64_t)fwd.y * d) >> 15);
+    c->pos.z = centre.z - (int32_t)(((int64_t)fwd.z * d) >> 15);
+    return (int32_t)d;
+}
+
 void hx421_camera_set_fov_preset(Hx421Scene *s, int id, Hx421FovPreset p, int screen_w) {
     /* degrees * 1024 / 360 */
     static const int32_t deg[4] = { 114, 171, 213, 256 };   /* 40, 60, 75, 90 */

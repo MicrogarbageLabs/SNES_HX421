@@ -269,6 +269,54 @@ int main(void) {
         hx421_camera_set_fov_preset(s, cam, HX421_FOV_NORMAL, 240);
     }
 
+    /* ---- framing in world units ---- */
+    {
+        /* 10 world units across the screen at depth 9 */
+        hx421_camera_frame_width(s, cam, 10*ONE, 9*ONE, 240);
+        Hx421Vec probe = { 5*ONE, 0, 0 };          /* the right-hand edge */
+        int32_t sx = (int32_t)(((int64_t)probe.x * s->cam[cam].focal_x) / (9*ONE));
+        ck_near(sx >> (16 - HX421_SUBPX), 120*HX421_ONE, 2*HX421_ONE,
+                "frame_width puts the requested span at the screen edge");
+
+        hx421_camera_frame_height(s, cam, 8*ONE, 9*ONE, 200);
+        int32_t sy = (int32_t)(((int64_t)(4*ONE) * s->cam[cam].focal_y) / (9*ONE));
+        ck_near(sy >> (16 - HX421_SUBPX), 100*HX421_ONE, 2*HX421_ONE,
+                "frame_height puts the requested span at the screen edge");
+        /* and the pixel aspect must survive being driven from the height */
+        const int32_t par2 = (int32_t)(((int64_t)s->cam[cam].focal_y << 16)
+                                        / s->cam[cam].focal_x);
+        ck_near(par2, HX421_PAR_SNES, 600, "frame_height preserves the pixel aspect");
+
+        /* THE regression: a box that fits must fit in BOTH axes. The vertical
+         * FOV is narrower than the horizontal once the aspect is applied, so a
+         * horizontal-only framing drops things off the top and bottom — which is
+         * exactly how a cube went missing when the FOV moved to 60 degrees. */
+        for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) s->obj[i].active = 0;
+        int fitobj = hx421_object_spawn(s, mid);
+        Hx421Vec half = { 5*ONE, 4*ONE, 3*ONE };
+        Hx421Vec ctr  = { 0, 0, 0 };
+        int32_t dist = hx421_camera_fit_box(s, cam, ctr, half, 240, 200);
+        ck(dist > 0, "fit_box returns a distance");
+
+        /* place a cube at each of the eight box corners; every one must land on
+         * screen, which a centre-based fit would fail at the near corners */
+        int all_on = 1;
+        for (int cx = -1; cx <= 1; cx += 2)
+        for (int cy = -1; cy <= 1; cy += 2)
+        for (int cz = -1; cz <= 1; cz += 2) {
+            Hx421Vec p = { cx * (half.x - ONE), cy * (half.y - ONE), cz * (half.z - ONE) };
+            hx421_object_set_pos(s, fitobj, p);
+            int nn = hx421_scene_render(s, tris, HX421_MAX_TRIS, 240, 200);
+            if (!nn) { all_on = 0; continue; }
+            for (int t = 0; t < nn; ++t)
+                for (int k = 0; k < 3; ++k) {
+                    if (tris[t].v[k].x < 0 || tris[t].v[k].x > 240*HX421_ONE) all_on = 0;
+                    if (tris[t].v[k].y < 0 || tris[t].v[k].y > 200*HX421_ONE) all_on = 0;
+                }
+        }
+        ck(all_on, "fit_box keeps all eight box corners on screen");
+    }
+
     /* Perspective: the near face must project WIDER than the far face. A bug
      * that drops the divide entirely still passes an on-screen check.
      * Split on the observed midpoint rather than a magic depth — a hardcoded
