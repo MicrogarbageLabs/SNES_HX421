@@ -29,6 +29,7 @@
 #include "hx421_metatile.h"
 #include "hx421_raster.h"
 #include "hx421_scene3d.h"
+#include "hx421_collide.h"
 
 /* ---- singleton runtime state (the ABI is a single instance, like mgapi) --- */
 static HxaService *g_svc;
@@ -2012,7 +2013,20 @@ static Hx421Scene      g_r3d_scene;
 static Hx421RenderOut  g_r3d_out;
 static Hx421Tri        g_r3d_tris[HX421_MAX_TRIS];
 static uint8_t         g_r3d_solid[16 * 32];
-static int             g_r3d_obj[3];
+
+/* Cube count is settable so the frame-rate mechanism can actually be WATCHED:
+ * the whole "complexity costs time" claim is invisible while the scene fits one
+ * burst. More cubes -> more mixed tiles -> more bursts -> a visibly lower rate. */
+#define R3D_MAX_CUBES      24
+#define R3D_CUBES_DEFAULT   6
+#define R3D_ARENA_X   (4 * 65536)
+#define R3D_ARENA_Y   (3 * 65536)
+#define R3D_ARENA_Z   (3 * 65536)
+
+static int              g_r3d_count;
+static int              g_r3d_obj[R3D_MAX_CUBES];
+static Hx421Plane       g_r3d_planes[HX421_MAX_PLANES];
+static Hx421ContactList g_r3d_contacts;
 
 /* Unit cube, 12 triangles, a distinct colour index per face pair so the solid
  * classifier has something to actually classify. */
@@ -2044,22 +2058,47 @@ static void hx_r3d_init(void) {
         else fprintf(stderr, "hx421 3d: ignoring HX421_3D_BURST=%s (want %u..8192)\n",
                      bb, R3D_FIXED_BYTES + 257u);
     }
+    const char *nc = getenv("HX421_3D_CUBES");
+    g_r3d_count = nc ? (int)strtol(nc, NULL, 0) : R3D_CUBES_DEFAULT;
+    if (g_r3d_count < 1) g_r3d_count = 1;
+    if (g_r3d_count > R3D_MAX_CUBES) g_r3d_count = R3D_MAX_CUBES;
+
     hx421_scene_init(&g_r3d_scene);
     Hx421Mesh cube;
     cube.verts = r3d_cube_v; cube.vcount = 8;
     cube.faces = r3d_cube_f; cube.colors = r3d_cube_c; cube.fcount = 12;
     hx421_mesh_fit_bounds(&cube);   /* derived, so bounds cannot drift from art */
+    hx421_mesh_fit_planes(&cube, g_r3d_planes, HX421_MAX_PLANES);
     int mid = hx421_mesh_register(&g_r3d_scene, &cube);
 
-    /* three instances of ONE mesh — the registry's whole point */
-    static const int32_t xs[3] = { -3, 0, 3 };
-    for (int i = 0; i < 3; ++i) {
+    /* N instances of ONE mesh — the registry's whole point. Positions and
+     * velocities from a fixed LCG so a run is reproducible; there is no
+     * Date.now() equivalent here and a varying scene would make "does the frame
+     * rate drop where expected" unanswerable. */
+    /* Spread across the arena, in ARENA units. Scaling a raw LCG value by a
+     * hand-picked constant put every cube inside a +-1 unit box at the origin —
+     * with 2x2x2 cubes that is total mutual overlap, which saturated the contact
+     * list and let the separation pushes eject one through the wall. */
+    uint32_t seed = 0x1234567u;
+    const int32_t span[3] = { (R3D_ARENA_X / 10) * 8, (R3D_ARENA_Y / 10) * 8,
+                              (R3D_ARENA_Z / 10) * 8 };
+    for (int i = 0; i < g_r3d_count; ++i) {
         g_r3d_obj[i] = hx421_object_spawn(&g_r3d_scene, mid);
-        Hx421Vec p = { xs[i] * 65536, 0, 0 };
+        int32_t c[3];
+        for (int k = 0; k < 3; ++k) {
+            seed = seed * 1103515245u + 12345u;
+            c[k] = (int32_t)((seed >> 8) % (uint32_t)(2 * span[k])) - span[k];
+        }
+        Hx421Vec p = { c[0], c[1], c[2] };
         hx421_object_set_pos(&g_r3d_scene, g_r3d_obj[i], p);
+        seed = seed * 1103515245u + 12345u;
+        Hx421Vec v = { (int32_t)((seed >> 20) % 1200u) - 600,
+                       (int32_t)((seed >> 8)  % 1200u) - 600,
+                       (int32_t)((seed >> 14) % 1200u) - 600 };
+        hx421_object_set_vel(&g_r3d_scene, g_r3d_obj[i], v);
     }
     /* focal is in PIXELS: 120 on a 240-wide screen is a 90-degree FOV. */
-    Hx421Vec cpos = { 0, 0, -7 * 65536 };
+    Hx421Vec cpos = { 0, 0, -9 * 65536 };
     int cam = hx421_camera_register(&g_r3d_scene, cpos, 120 * 65536);
     hx421_camera_set_active(&g_r3d_scene, cam);
 
@@ -2067,10 +2106,79 @@ static void hx_r3d_init(void) {
 
     fprintf(stderr, "hx421 3d: TBDR demo — %ux%u px (%ux%u tiles), pool %u slots, "
                     "%u B/burst (burst 0 carries %u B of fixed payload); "
-                    "frame rate follows scene complexity\n",
+                    "%d cubes with collision; frame rate follows scene complexity\n",
             R3D_TILES_W * 8u, R3D_TILES_H * 8u, R3D_TILES_W, R3D_TILES_H,
-            HX421_DYN_SLOTS, g_r3d_burst_bytes, R3D_FIXED_BYTES);
+            HX421_DYN_SLOTS, g_r3d_burst_bytes, R3D_FIXED_BYTES, g_r3d_count);
     fflush(stderr);
+}
+
+/* One physics tick: integrate, sweep, deflect. This is the whole collision
+ * stack running on the SNES's own clock — registry, broad, mid, narrow, resolve.
+ *
+ * The arena is handled here rather than as a registry object because a room is
+ * not a convex solid: its walls face INWARD, which is the opposite of what a
+ * derived plane set describes. Faking it as an object would mean planes that
+ * disagree with the mesh they came from, which is the exact drift the derived
+ * bounds exist to prevent. */
+static void hx_r3d_physics(void) {
+    Hx421Scene *s = &g_r3d_scene;
+
+    for (int i = 0; i < g_r3d_count; ++i) {
+        const int id = g_r3d_obj[i];
+        hx421_object_translate(s, id, s->obj[id].vel);
+        /* arena bounce: reverse the component that left the box */
+        int32_t *p[3] = { &s->obj[id].pos.x, &s->obj[id].pos.y, &s->obj[id].pos.z };
+        int32_t *v[3] = { &s->obj[id].vel.x, &s->obj[id].vel.y, &s->obj[id].vel.z };
+        const int32_t lim[3] = { R3D_ARENA_X, R3D_ARENA_Y, R3D_ARENA_Z };
+        for (int k = 0; k < 3; ++k) {
+            if (*p[k] >  lim[k] && *v[k] > 0) *v[k] = -*v[k];
+            if (*p[k] < -lim[k] && *v[k] < 0) *v[k] = -*v[k];
+            /* Hard clamp as well as the bounce. The contact separation push can
+             * shove a crowded cube past the wall in one step, and reversing the
+             * velocity alone does not retrieve something already outside — it
+             * just leaves it drifting out there forever. */
+            if (*p[k] >  lim[k]) *p[k] =  lim[k];
+            if (*p[k] < -lim[k]) *p[k] = -lim[k];
+        }
+    }
+
+    hx421_broadphase(s, &g_r3d_contacts, HX421_SCAN_TOPLEFT);
+    hx421_midphase(s, &g_r3d_contacts);
+    hx421_narrowphase(s, &g_r3d_contacts);
+
+    for (unsigned c = 0; c < g_r3d_contacts.count; ++c) {
+        const Hx421Contact *k = &g_r3d_contacts.c[c];
+        Hx421Object *a = &s->obj[k->a], *b = &s->obj[k->b];
+        if (a->passthrough || b->passthrough) continue;
+
+        /* Both objects respond, each against the normal set as seen from its
+         * own side. The set is the source of truth; hx421_resolve is the
+         * convenience, and a wedged return leaves the velocity zeroed. */
+        Hx421Vec out;
+        if (hx421_resolve(k->normals, k->nnormals, a->vel, HX421_RESPONSE_BOUNCE, &out))
+            a->vel = out;
+        Hx421Vec flip[HX421_MAX_NORMALS];
+        for (unsigned n = 0; n < k->nnormals; ++n) {
+            flip[n].x = -k->normals[n].x;
+            flip[n].y = -k->normals[n].y;
+            flip[n].z = -k->normals[n].z;
+        }
+        if (hx421_resolve(flip, k->nnormals, b->vel, HX421_RESPONSE_BOUNCE, &out))
+            b->vel = out;
+
+        /* Separate along the contact normal so the pair does not re-collide next
+         * frame and stick together — resolving velocity alone leaves them
+         * interpenetrating, and a second bounce would cancel the first. */
+        if (k->depth > 0 && k->nnormals) {
+            const Hx421Vec n0 = k->normals[0];
+            const int32_t push = k->depth / 2 + 1;
+            const int32_t sx = (int32_t)(((int64_t)n0.x * push) >> 16);
+            const int32_t sy = (int32_t)(((int64_t)n0.y * push) >> 16);
+            const int32_t sz = (int32_t)(((int64_t)n0.z * push) >> 16);
+            a->pos.x -= sx; a->pos.y -= sy; a->pos.z -= sz;
+            b->pos.x += sx; b->pos.y += sy; b->pos.z += sz;
+        }
+    }
 }
 
 /* One burst was DMA'd. Step to the next; wrapping past the last means the
@@ -2086,12 +2194,10 @@ static void hx_r3d_advance(void) {
 /* Animate, transform, rasterise. Called once per FRAME, not per burst. */
 static void hx_r3d_build_frame(void) {
     /* relative commands: no accumulated angle for the caller to track */
-    for (int i = 0; i < 3; ++i)
-        hx421_object_rotate(&g_r3d_scene, g_r3d_obj[i], 3 + i, 2, 0);
+    for (int i = 0; i < g_r3d_count; ++i)
+        hx421_object_rotate(&g_r3d_scene, g_r3d_obj[i], 3 + (i & 3), 2, 0);
 
-    /* the middle cube faces the outer left one, exercising point_at */
-    Hx421Vec tgt = g_r3d_scene.obj[g_r3d_obj[0]].pos;
-    hx421_object_point_at(&g_r3d_scene, g_r3d_obj[1], tgt, 1);
+    hx_r3d_physics();
 
     int n = hx421_scene_render(&g_r3d_scene, g_r3d_tris, HX421_MAX_TRIS,
                                (int)(R3D_TILES_W * 8), (int)(R3D_TILES_H * 8));

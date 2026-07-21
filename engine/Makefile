@@ -126,8 +126,17 @@ $(BUILD)/hx421_scene3d.o: $(RUNTIME_DIR)/hx421_scene3d.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -DHX421_BUILDING_DLL -c $< -o $@
 
+$(BUILD)/hx421_collide.o: $(RUNTIME_DIR)/hx421_collide.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -DHX421_BUILDING_DLL -c $< -o $@
+
+$(BUILD)/hx421_mask.o: $(RUNTIME_DIR)/hx421_mask.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -DHX421_BUILDING_DLL -c $< -o $@
+
 DLL_OBJ = $(BUILD)/hx421_runtime.o $(BUILD)/hx421_wasapi.o $(BUILD)/hx421_metatile.o \
-          $(BUILD)/hx421_raster.o $(BUILD)/hx421_scene3d.o
+          $(BUILD)/hx421_raster.o $(BUILD)/hx421_scene3d.o \
+          $(BUILD)/hx421_collide.o $(BUILD)/hx421_mask.o
 
 $(BUILD)/hx421.dll: $(ENGINE_OBJ) $(DLL_OBJ)
 	$(CC) -shared -o $@ $(ENGINE_OBJ) $(DLL_OBJ) -lm -lole32 $(LDFLAGS)

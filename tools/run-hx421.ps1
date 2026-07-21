@@ -45,6 +45,9 @@ param(
                            # Frame rate follows scene complexity: the CHR streams
                            # over N vblank bursts and the tilemap + CHR base flip
                            # together after the last one, so nothing half-built shows.
+    [int]$ThreeDCubes,     # how many cubes in the 3D demo ($HX421_3D_CUBES, default 6).
+                           # 1 = 60 fps, 8 = ~31 fps, 24 = ~23 fps. This is the knob
+                           # that makes "complexity costs TIME" visible on screen.
     [int]$ThreeDBurst      # override the per-burst CHR budget ($HX421_3D_BURST).
                            # The demo scene fits ONE burst at the real 6144 B, so
                            # the multi-burst flip never runs; drop this to ~3000 to
@@ -129,6 +132,12 @@ if ($ThreeD) {
     if ($Map -or $Fmv -or $FmvFile) { Die "-ThreeD is mutually exclusive with -Map and -Fmv" }
     $env:HX421_3D = "1"
     Write-Step "HX421_3D=1, TBDR renderer (frame rate follows scene complexity)"
+    if ($ThreeDCubes -gt 0) {
+        $env:HX421_3D_CUBES = "$ThreeDCubes"
+        Write-Step "HX421_3D_CUBES=$ThreeDCubes"
+    } else {
+        Remove-Item Env:\HX421_3D_CUBES -ErrorAction SilentlyContinue
+    }
     if ($ThreeDBurst -gt 0) {
         $env:HX421_3D_BURST = "$ThreeDBurst"
         Write-Step "HX421_3D_BURST=$ThreeDBurst B/burst (forces the multi-burst flip path)"
@@ -138,6 +147,7 @@ if ($ThreeD) {
 } else {
     Remove-Item Env:\HX421_3D -ErrorAction SilentlyContinue
     Remove-Item Env:\HX421_3D_BURST -ErrorAction SilentlyContinue
+    Remove-Item Env:\HX421_3D_CUBES -ErrorAction SilentlyContinue
 }
 
 # Repo root = parent of the dir holding this script (SNES_HX_421).
