@@ -23,6 +23,16 @@ static void ck_near(int32_t got, int32_t want, int32_t tol, const char *what) {
 #define V(a,b,c) ((Hx421Vec){ (a)*65536, (b)*65536, (c)*65536 })
 #define ONE 65536
 
+/* v' = M * v, Q15 matrix against a Q16.16 vector — the same operation the
+ * renderer performs, replicated so the test can check its result directly. */
+static Hx421Vec mat_apply_test(const Hx421Mat *m, Hx421Vec v) {
+    Hx421Vec r;
+    r.x = (int32_t)(((int64_t)m->m[0]*v.x + (int64_t)m->m[1]*v.y + (int64_t)m->m[2]*v.z) >> 15);
+    r.y = (int32_t)(((int64_t)m->m[3]*v.x + (int64_t)m->m[4]*v.y + (int64_t)m->m[5]*v.z) >> 15);
+    r.z = (int32_t)(((int64_t)m->m[6]*v.x + (int64_t)m->m[7]*v.y + (int64_t)m->m[8]*v.z) >> 15);
+    return r;
+}
+
 /* A unit cube centred on the origin, 12 triangles. */
 static const Hx421Vec cube_v[8] = {
     {-ONE,-ONE,-ONE},{ ONE,-ONE,-ONE},{ ONE, ONE,-ONE},{-ONE, ONE,-ONE},
@@ -100,6 +110,46 @@ int main(void) {
     hx421_object_move_local(s, b, V(0, 0, 1));
     ck_near(s->obj[b].pos.x, ONE, 64, "move_local +z after yaw90 -> world +x");
     ck_near(s->obj[b].pos.z, 0,   64, "move_local +z after yaw90 -> world z ~0");
+
+    /* ---- the matrix must stay a ROTATION over a long session ----
+     * Composing Q15 matrices truncates, and the demo composes one per object per
+     * frame. Unrenormalised this drifted to row lengths of 0.72/1.04 with rows
+     * 0.23 out of orthogonal after a minute of play, which SHEARS AND SQUASHES
+     * every object — it looks like a projection or aspect bug, not like matrix
+     * error, which is exactly why it needs a standing test.
+     *
+     * 20000 iterations is ~5.5 minutes at 60 Hz. Checking after a handful of
+     * rotations proves nothing: the error is cumulative. */
+    hx421_object_set_rot(s, b, 0, 0, 0);
+    for (int i = 0; i < 20000; ++i) hx421_object_rotate(s, b, 3, 2, 0);
+    {
+        const Hx421Mat *r = &s->obj[b].rot;
+        int rigid = 1;
+        for (int i = 0; i < 3; ++i) {
+            int64_t len = 0;
+            for (int k = 0; k < 3; ++k) len += (int64_t)r->m[i*3+k] * r->m[i*3+k];
+            len >>= 15;                                   /* -> Q15 */
+            if (len < 32768 - 200 || len > 32768 + 200) rigid = 0;
+        }
+        ck(rigid, "rows stay unit length over 20000 rotations");
+
+        int orthogonal = 1;
+        for (int i = 0; i < 3 && orthogonal; ++i)
+            for (int j = i + 1; j < 3; ++j) {
+                int64_t d = 0;
+                for (int k = 0; k < 3; ++k) d += (int64_t)r->m[i*3+k] * r->m[j*3+k];
+                d >>= 15;
+                if (d < -200 || d > 200) { orthogonal = 0; break; }
+            }
+        ck(orthogonal, "rows stay mutually orthogonal over 20000 rotations");
+
+        /* And the consequence that actually matters: a cube still projects with
+         * the aspect it started with, rather than progressively squashing. */
+        Hx421Vec vtest = { ONE, 0, 0 };
+        Hx421Vec rot = mat_apply_test(r, vtest);
+        int64_t l2 = ((int64_t)rot.x*rot.x + (int64_t)rot.y*rot.y + (int64_t)rot.z*rot.z) >> 16;
+        ck_near((int32_t)l2, ONE, 600, "a rotated unit vector keeps unit length");
+    }
 
     /* four 90-degree relative rotations must return to identity */
     hx421_object_set_rot(s, b, 0, 0, 0);

@@ -79,6 +79,47 @@ static Hx421Mat mat_euler(int32_t yaw, int32_t pitch, int32_t roll) {
     Hx421Mat R = {{ cr,-sr,0,  sr,cr,0,  0,0,Q15_ONE }};
     return mat_mul(mat_mul(Y, P), R);
 }
+/* Re-orthonormalise a rotation matrix.
+ *
+ * REQUIRED, not a refinement. Composing Q15 matrices truncates, and the demo
+ * composes one per object per frame: measured drift is 2% off unit by ~5 seconds
+ * and, by a minute in, row lengths of 0.72/1.04 with rows 0.23 out of
+ * orthogonal. The visible result is that objects progressively SHEAR AND SQUASH
+ * — a cube stops looking like a cube — which reads as a projection or aspect
+ * bug rather than as accumulated matrix error.
+ *
+ * Uses the direction-cosine correction rather than Gram-Schmidt with square
+ * roots: split the measured non-orthogonality between the first two rows, take
+ * the third as their cross product, then scale each to unit length with the
+ * first-order approximation 1/|v| ~= (3 - v.v)/2, which is accurate to well
+ * under a bit for a nearly-unit vector. Multiplies only, so it maps onto the
+ * fabric's hard multipliers with no divider or sqrt. */
+static Hx421Mat mat_renorm(Hx421Mat m) {
+    Hx421Vec r0 = { m.m[0], m.m[1], m.m[2] };
+    Hx421Vec r1 = { m.m[3], m.m[4], m.m[5] };
+
+    const int32_t err = qmul15(r0.x, r1.x) + qmul15(r0.y, r1.y) + qmul15(r0.z, r1.z);
+    const int32_t h = err / 2;                    /* share the error evenly */
+    const Hx421Vec a = { r0.x - qmul15(h, r1.x), r0.y - qmul15(h, r1.y), r0.z - qmul15(h, r1.z) };
+    const Hx421Vec b = { r1.x - qmul15(h, r0.x), r1.y - qmul15(h, r0.y), r1.z - qmul15(h, r0.z) };
+    /* third row is forced to the cross product, so it cannot drift on its own */
+    const Hx421Vec c = { qmul15(a.y, b.z) - qmul15(a.z, b.y),
+                         qmul15(a.z, b.x) - qmul15(a.x, b.z),
+                         qmul15(a.x, b.y) - qmul15(a.y, b.x) };
+
+    Hx421Vec rows[3] = { a, b, c };
+    Hx421Mat out;
+    for (int i = 0; i < 3; ++i) {
+        const Hx421Vec v = rows[i];
+        const int32_t d = qmul15(v.x, v.x) + qmul15(v.y, v.y) + qmul15(v.z, v.z);
+        const int32_t s = (3 * Q15_ONE - d) / 2;   /* ~ 1/|v| in Q15 */
+        out.m[i*3+0] = qmul15(v.x, s);
+        out.m[i*3+1] = qmul15(v.y, s);
+        out.m[i*3+2] = qmul15(v.z, s);
+    }
+    return out;
+}
+
 /* v' = M * v, v in Q16.16, M in Q15 */
 static Hx421Vec mat_apply(Hx421Mat m, Hx421Vec v) {
     Hx421Vec r;
@@ -251,8 +292,10 @@ void hx421_object_move_local(Hx421Scene *s, int id, Hx421Vec d) {
 void hx421_object_rotate(Hx421Scene *s, int id, int32_t dyaw, int32_t dpitch, int32_t droll) {
     Hx421Object *o = obj_of(s, id);
     /* Compose onto the existing matrix rather than tracking Euler angles: the
-     * caller never has to accumulate, and there is no angle to wrap or drift. */
-    if (o) o->rot = mat_mul(o->rot, mat_euler(dyaw, dpitch, droll));
+     * caller never has to accumulate, and there is no angle to wrap. Renormalise
+     * every time — the composition is what drifts, so correcting it anywhere
+     * else means the error is already visible before it is fixed. */
+    if (o) o->rot = mat_renorm(mat_mul(o->rot, mat_euler(dyaw, dpitch, droll)));
 }
 
 /* ---- facing ------------------------------------------------------------- */
@@ -352,7 +395,9 @@ void hx421_camera_move_local(Hx421Scene *s, int id, Hx421Vec d) {
 }
 void hx421_camera_rotate(Hx421Scene *s, int id, int32_t dy, int32_t dp, int32_t dr) {
     Hx421Camera *c = cam_of(s, id);
-    if (c) c->rot = mat_mul(c->rot, mat_euler(dy, dp, dr));
+    /* A drifting camera matrix skews the whole scene at once, so it matters here
+     * even more than on an object. */
+    if (c) c->rot = mat_renorm(mat_mul(c->rot, mat_euler(dy, dp, dr)));
 }
 void hx421_camera_point_at(Hx421Scene *s, int id, Hx421Vec target, int roll_lock) {
     Hx421Camera *c = cam_of(s, id);
