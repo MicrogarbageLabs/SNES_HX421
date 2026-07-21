@@ -132,9 +132,12 @@ void hx421_mesh_fit_bounds(Hx421Mesh *m) {
     int32_t lo_z = m->verts[0].z, hi_z = lo_z;
     for (uint16_t i = 1; i < m->vcount; ++i) {
         const Hx421Vec v = m->verts[i];
-        if (v.x < lo_x) lo_x = v.x;  if (v.x > hi_x) hi_x = v.x;
-        if (v.y < lo_y) lo_y = v.y;  if (v.y > hi_y) hi_y = v.y;
-        if (v.z < lo_z) lo_z = v.z;  if (v.z > hi_z) hi_z = v.z;
+        if (v.x < lo_x) lo_x = v.x;
+        if (v.x > hi_x) hi_x = v.x;
+        if (v.y < lo_y) lo_y = v.y;
+        if (v.y > hi_y) hi_y = v.y;
+        if (v.z < lo_z) lo_z = v.z;
+        if (v.z > hi_z) hi_z = v.z;
     }
     m->centre.x = lo_x + (hi_x - lo_x) / 2;
     m->centre.y = lo_y + (hi_y - lo_y) / 2;
