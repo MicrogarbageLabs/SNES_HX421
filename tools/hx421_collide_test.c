@@ -79,11 +79,11 @@ int main(void) {
     int b = hx421_object_spawn(s, mid);
     hx421_object_set_pos(s, a, V(0,0,0));
     hx421_object_set_pos(s, b, V(10,0,0));
-    ck(hx421_broadphase(s, cl) == 0, "separated objects produce no contacts");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "separated objects produce no contacts");
     ck(cl->tests == 1, "one pair, one test");
 
     hx421_object_set_pos(s, b, V(1,0,0));
-    ck(hx421_broadphase(s, cl) == 1, "overlapping objects produce a contact");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 1, "overlapping objects produce a contact");
     ck(cl->c[0].a == (uint16_t)a && cl->c[0].b == (uint16_t)b, "contact names both objects");
     ck(cl->overflow == 0, "no overflow at two objects");
 
@@ -92,27 +92,27 @@ int main(void) {
 
     /* ---- filtering ---- */
     s->obj[b].collidable = 0;
-    ck(hx421_broadphase(s, cl) == 0, "collidable=0 opts out");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "collidable=0 opts out");
     ck(cl->tests == 0, "opted-out object is not even tested");
     s->obj[b].collidable = 1;
 
     s->obj[a].layer = 1; s->obj[b].mask = 0;      /* b accepts nothing */
-    ck(hx421_broadphase(s, cl) == 0, "mask 0 collides with nothing");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "mask 0 collides with nothing");
     s->obj[b].mask = 0xFF;
-    ck(hx421_broadphase(s, cl) == 1, "restoring the mask restores the contact");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 1, "restoring the mask restores the contact");
 
     /* asymmetric masks must NOT produce a contact — both sides have to agree */
     s->obj[a].layer = 1; s->obj[a].mask = 0xFF;
     s->obj[b].layer = 2; s->obj[b].mask = 0x02;   /* b accepts layer 1 */
-    ck(hx421_broadphase(s, cl) == 1, "both sides accepting -> contact");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 1, "both sides accepting -> contact");
     s->obj[b].mask = 0x01;                        /* b no longer accepts layer 1 */
-    ck(hx421_broadphase(s, cl) == 0, "one side refusing kills the contact");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "one side refusing kills the contact");
     s->obj[a].layer = 0; s->obj[a].mask = 0xFF;
     s->obj[b].layer = 0; s->obj[b].mask = 0xFF;
 
     /* despawned objects drop out of the sweep entirely */
     hx421_object_despawn(s, b);
-    ck(hx421_broadphase(s, cl) == 0, "despawned object is not swept");
+    ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "despawned object is not swept");
     ck(cl->tests == 0, "despawned object costs no tests");
 
     /* ---- overflow is reported, not silent ---- */
@@ -124,11 +124,90 @@ int main(void) {
         if (o < 0) break;
         hx421_object_set_pos(s, o, V(0,0,0));     /* all mutually overlapping */
     }
-    int got = hx421_broadphase(s, cl);
+    int got = hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT);
     ck(got == (int)HX421_MAX_CONTACTS, "contact list saturates at the cap");
     ck(cl->overflow > 0, "dropped pairs are reported, not silently lost");
 
+    /* ---- 2D actors share the table, the filter and the sweep ---- */
+    hx421_scene_init(s);
+    {
+        /* a solid 16x16 actor mask; bits live outside the registry */
+        static uint8_t solid16[2 * 16];
+        for (unsigned i = 0; i < sizeof solid16; ++i) solid16[i] = 0xFF;
+        Hx421Mask am = { 16, 16, 2, solid16 };
+        int mk = hx421_mask_register(s, &am);
+        ck(mk == 0, "first mask id is 0");
+        ck(hx421_actor_spawn(s, 99) < 0, "actor spawn rejects a bad mask id");
+
+        int p = hx421_actor_spawn(s, mk);
+        int q = hx421_actor_spawn(s, mk);
+        ck(p >= 0 && q >= 0, "actors spawn into the object table");
+        ck(s->obj[p].kind == HX421_BODY_MASK, "an actor is a MASK body");
+        ck(s->obj[p].visible == 0, "an actor is not drawn by the 3D renderer");
+
+        /* positions are Q16.16 SCREEN PIXELS for a mask body */
+        Hx421Vec pa = { 10 * ONE, 10 * ONE, 0 };
+        Hx421Vec pb = { 100 * ONE, 10 * ONE, 0 };
+        hx421_object_set_pos(s, p, pa);
+        hx421_object_set_pos(s, q, pb);
+        ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "separated actors miss");
+
+        Hx421Vec near = { 18 * ONE, 14 * ONE, 0 };
+        hx421_object_set_pos(s, q, near);
+        ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 1, "overlapping actors hit");
+        ck(cl->c[0].kind == HX421_BODY_MASK, "contact records the pair kind");
+        ck(cl->c[0].px == 18 && cl->c[0].py == 14, "contact point is in world pixels");
+        ck(cl->c[0].depth == 0, "a mask pair reports no fabricated depth");
+
+        /* sub-pixel motion must accumulate rather than round away each frame */
+        Hx421Vec half = { ONE / 2, 0, 0 };
+        Hx421Vec before = s->obj[q].pos;
+        for (int k = 0; k < 2; ++k) hx421_object_translate(s, q, half);
+        ck(s->obj[q].pos.x == before.x + ONE, "two half-pixel steps make one pixel");
+
+        /* the layer filter works identically for actors */
+        s->obj[q].mask = 0;
+        ck(hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT) == 0, "actors honour the layer mask");
+        s->obj[q].mask = 0xFF;
+
+        /* scan order picks the contact for actors too */
+        Hx421MaskHit unused; (void)unused;
+        hx421_broadphase(s, cl, HX421_SCAN_BOTTOMRIGHT);
+        ck(cl->count == 1, "actor pair still hits under a different scan order");
+        ck(cl->c[0].px != 18 || cl->c[0].py != 14,
+           "a different scan order reports a different contact pixel");
+
+        /* ---- mixed kinds: counted, never guessed ---- */
+        Hx421Mesh sm = mesh_r(50 * ONE);          /* huge, would overlap anything */
+        int smid = hx421_mesh_register(s, &sm);
+        int o3 = hx421_object_spawn(s, smid);
+        hx421_object_set_pos(s, o3, s->obj[p].pos);
+        hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT);
+        ck(cl->cross_skipped == 2, "mesh-vs-mask pairs are skipped and counted");
+        ck(cl->count == 1, "and produce no contact — a 3D sphere vs 2D pixels is undefined");
+
+        /* the 3D renderer must not try to draw the actors */
+        Hx421Tri *tr = calloc(HX421_MAX_TRIS, sizeof *tr);
+        Hx421Vec cpos = { 0, 0, -400 * ONE };
+        hx421_camera_set_active(s, hx421_camera_register(s, cpos, 128 * ONE));
+        s->obj[p].visible = 1;                    /* force the guard to matter */
+        int nt = hx421_scene_render(s, tr, HX421_MAX_TRIS, 256, 208);
+        ck(nt == 1, "render emits the mesh object only, not the visible actor");
+        free(tr);
+    }
+
     /* ---- the measurement docs/collision.md asks for ---- */
+    hx421_scene_init(s);
+    {
+        Hx421Mesh big2 = mesh_r(4 * ONE);
+        int bid2 = hx421_mesh_register(s, &big2);
+        for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) {
+            int o = hx421_object_spawn(s, bid2);
+            if (o < 0) break;
+            hx421_object_set_pos(s, o, V(0,0,0));
+        }
+        hx421_broadphase(s, cl, HX421_SCAN_TOPLEFT);
+    }
     unsigned n_obj = 0;
     for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) if (s->obj[i].active) n_obj++;
     printf("\n  measurement: %u objects -> %u pair tests "

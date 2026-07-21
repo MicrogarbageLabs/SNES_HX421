@@ -117,6 +117,7 @@ void hx421_scene_init(Hx421Scene *s) {
     for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) { s->obj[i].active = 0; s->obj[i].rot = mat_identity(); }
     for (unsigned i = 0; i < HX421_MAX_CAM; ++i) { s->cam[i].active = 0; s->cam[i].rot = mat_identity(); }
     s->mesh_count = 0;
+    s->mask_count = 0;
     s->active_cam = 0;
 }
 int hx421_mesh_register(Hx421Scene *s, const Hx421Mesh *m) {
@@ -124,8 +125,14 @@ int hx421_mesh_register(Hx421Scene *s, const Hx421Mesh *m) {
     s->mesh[s->mesh_count] = *m;
     return (int)s->mesh_count++;
 }
-int hx421_object_spawn(Hx421Scene *s, int mesh_id) {
-    if (!s || mesh_id < 0 || mesh_id >= (int)s->mesh_count) return -1;
+int hx421_mask_register(Hx421Scene *s, const Hx421Mask *m) {
+    if (!s || !m || !m->bits || s->mask_count >= HX421_MAX_MASK) return -1;
+    s->mask[s->mask_count] = *m;          /* descriptor only; bits stay put */
+    return (int)s->mask_count++;
+}
+
+/* Shared spawn: claim a slot and set the defaults both kinds want. */
+static int spawn_slot(Hx421Scene *s) {
     for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) {
         if (s->obj[i].active) continue;
         s->obj[i].active = 1; s->obj[i].visible = 1;
@@ -135,12 +142,35 @@ int hx421_object_spawn(Hx421Scene *s, int mesh_id) {
         s->obj[i].collidable = 1;
         s->obj[i].layer = 0;
         s->obj[i].mask  = 0xFF;
-        s->obj[i].mesh = (uint16_t)mesh_id;
+        s->obj[i].mesh = 0;
+        s->obj[i].mask_id = 0;
         s->obj[i].pos.x = s->obj[i].pos.y = s->obj[i].pos.z = 0;
         s->obj[i].rot = mat_identity();
         return (int)i;
     }
     return -1;
+}
+
+int hx421_object_spawn(Hx421Scene *s, int mesh_id) {
+    if (!s || mesh_id < 0 || mesh_id >= (int)s->mesh_count) return -1;
+    int id = spawn_slot(s);
+    if (id < 0) return -1;
+    s->obj[id].kind = HX421_BODY_MESH;
+    s->obj[id].mesh = (uint16_t)mesh_id;
+    return id;
+}
+
+int hx421_actor_spawn(Hx421Scene *s, int mask_id) {
+    if (!s || mask_id < 0 || mask_id >= (int)s->mask_count) return -1;
+    int id = spawn_slot(s);
+    if (id < 0) return -1;
+    s->obj[id].kind = HX421_BODY_MASK;
+    s->obj[id].mask_id = (uint16_t)mask_id;
+    /* A 2D actor has no mesh, so the 3D renderer must not try to draw it. It is
+     * still `active` and still swept for collision — invisible to one consumer
+     * of the registry, live to the other. */
+    s->obj[id].visible = 0;
+    return id;
 }
 void hx421_object_despawn(Hx421Scene *s, int id) {
     if (s && id >= 0 && id < (int)HX421_MAX_OBJ) s->obj[id].active = 0;
@@ -263,6 +293,10 @@ int hx421_scene_render(const Hx421Scene *s, Hx421Tri *out, int max,
     for (unsigned i = 0; i < HX421_MAX_OBJ && n < max; ++i) {
         const Hx421Object *o = &s->obj[i];
         if (!o->active || !o->visible) continue;
+        /* A mask actor's `mesh` index is meaningless — reading s->mesh[] with it
+         * would rasterise whatever mesh 0 happens to be. Kind is checked here as
+         * well as at spawn because visible can be set by the caller. */
+        if (o->kind != HX421_BODY_MESH) continue;
         const Hx421Mesh *m = &s->mesh[o->mesh];
         if (!m->verts || !m->faces) continue;
 

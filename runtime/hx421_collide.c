@@ -70,14 +70,17 @@ int hx421_sphere_test(Hx421Vec pa, int32_t ra, Hx421Vec pb, int32_t rb,
     return 1;
 }
 
-int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out) {
+/* A mask actor's position is Q16.16 SCREEN PIXELS; the mask maths is integer. */
+static int px_of(int32_t q) { return (int)(q >> 16); }
+
+int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out,
+                     Hx421ScanOrder order) {
     if (!s || !out) return 0;
-    out->count = 0; out->overflow = 0; out->tests = 0;
+    out->count = 0; out->overflow = 0; out->tests = 0; out->cross_skipped = 0;
 
     for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) {
         const Hx421Object *a = &s->obj[i];
         if (!a->active || !a->collidable) continue;
-        const int32_t ra = s->mesh[a->mesh].radius;
 
         for (unsigned j = i + 1; j < HX421_MAX_OBJ; ++j) {
             const Hx421Object *b = &s->obj[j];
@@ -89,15 +92,30 @@ int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out) {
             if (!((a->mask >> b->layer) & 1u)) continue;
             if (!((b->mask >> a->layer) & 1u)) continue;
 
+            if (a->kind != b->kind) { out->cross_skipped++; continue; }
+
+            Hx421Contact cand;
+            cand.a = (uint16_t)i; cand.b = (uint16_t)j; cand.kind = a->kind;
+            cand.normal.x = cand.normal.y = cand.normal.z = 0;
+            cand.depth = 0; cand.px = cand.py = 0;
+
             out->tests++;
-            Hx421Vec n; int32_t d;
-            if (!hx421_sphere_test(a->pos, ra, b->pos, s->mesh[b->mesh].radius, &n, &d))
-                continue;
+            if (a->kind == HX421_BODY_MESH) {
+                if (!hx421_sphere_test(a->pos, s->mesh[a->mesh].radius,
+                                       b->pos, s->mesh[b->mesh].radius,
+                                       &cand.normal, &cand.depth)) continue;
+            } else {
+                const Hx421Mask *ma = &s->mask[a->mask_id];
+                const Hx421Mask *mb = &s->mask[b->mask_id];
+                Hx421MaskHit hit;
+                if (!hx421_mask_overlap(ma, px_of(a->pos.x), px_of(a->pos.y),
+                                        mb, px_of(b->pos.x), px_of(b->pos.y),
+                                        order, &hit)) continue;
+                cand.px = hit.x; cand.py = hit.y;
+            }
 
             if (out->count >= HX421_MAX_CONTACTS) { out->overflow++; continue; }
-            Hx421Contact *c = &out->c[out->count++];
-            c->a = (uint16_t)i; c->b = (uint16_t)j;
-            c->normal = n; c->depth = d;
+            out->c[out->count++] = cand;
         }
     }
     return (int)out->count;

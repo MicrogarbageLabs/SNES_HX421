@@ -35,8 +35,17 @@
  * arrives with the plane phase instead of being faked here. */
 typedef struct {
     uint16_t a, b;          /* object ids */
+    uint8_t  kind;          /* Hx421BodyKind of the pair — selects which fields below are meaningful */
+
+    /* MESH pairs: the separating direction and how deep they interpenetrate. */
     Hx421Vec normal;        /* unit vector a -> b, Q16.16 */
     int32_t  depth;         /* penetration along the normal, Q16.16 */
+
+    /* MASK pairs: the first overlapping pixel, in world pixels. A per-pixel
+     * sprite overlap has a contact POINT but no meaningful normal — faking one
+     * from the AABB would put impact effects on the wrong edge of concave art,
+     * so normal/depth stay zero and the point is the answer. */
+    int16_t  px, py;
 } Hx421Contact;
 
 typedef struct {
@@ -44,15 +53,30 @@ typedef struct {
     uint16_t     count;
     uint16_t     overflow;  /* pairs found past the cap — dropped, not silent */
     uint32_t     tests;     /* pair tests performed this sweep (the measurement) */
+    /* Mesh-vs-mask pairs passed the layer filter but were not tested: a 3D
+     * bounding sphere against a 2D screen-pixel mask has no defined meaning
+     * without a projection, and inventing one would give confidently wrong
+     * hits. Counted rather than skipped silently, so the gap is visible if a
+     * game starts relying on it. */
+    uint32_t     cross_skipped;
 } Hx421ContactList;
 
 /* Sweep every collidable pair. Returns the contact count (== out->count).
  *
+ * ONE sweep over ONE table serves both kinds: mesh pairs take the sphere test,
+ * mask pairs take AABB then per-pixel, and the narrow phase is chosen by what
+ * the entry carries. That is the point of unifying them — a game with sprites
+ * and mesh geometry does not maintain two worlds.
+ *
  * Filtering is layer/mask based: a and b collide only if each one's `mask` has
  * the other's `layer` bit set, so "bullets hit scenery but not other bullets"
  * costs no special cases. An object with mask 0 collides with nothing, which is
- * how a purely visual object opts out without leaving the registry. */
-int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out);
+ * how a purely visual object opts out without leaving the registry.
+ *
+ * `order` picks which contact pixel a mask pair reports; it is ignored by mesh
+ * pairs. */
+int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out,
+                     Hx421ScanOrder order);
 
 /* Sphere-vs-sphere for one pair, exposed so a caller can re-test a specific
  * pair without a full sweep (and so the test suite can check the maths

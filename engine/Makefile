@@ -158,7 +158,8 @@ $(BUILD)/hx421_scene3d_test$(EXE): $(TOOLS_DIR)/hx421_scene3d_test.c $(RUNTIME_D
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
 
 $(BUILD)/hx421_collide_test$(EXE): $(TOOLS_DIR)/hx421_collide_test.c \
-                                   $(RUNTIME_DIR)/hx421_collide.c $(RUNTIME_DIR)/hx421_scene3d.c
+                                   $(RUNTIME_DIR)/hx421_collide.c $(RUNTIME_DIR)/hx421_scene3d.c \
+                                   $(RUNTIME_DIR)/hx421_mask.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
 

@@ -24,11 +24,21 @@
 
 #include <stdint.h>
 #include "hx421_raster.h"
+#include "hx421_mask.h"
 
 #define HX421_MAX_MESH     16u
+#define HX421_MAX_MASK     32u
 #define HX421_MAX_OBJ      64u
 #define HX421_MAX_CAM       4u
 #define HX421_MAX_TRIS    512u    /* per frame, after culling */
+
+/* What an entry's geometry IS, which selects its narrow phase. A 2D actor is
+ * the same registry entry as a 3D object with a mask instead of a mesh, so one
+ * table and one broad phase serve both and a game never holds two worlds. */
+typedef enum {
+    HX421_BODY_MESH = 0,   /* 3D: bounding sphere -> mesh/plane narrow phase */
+    HX421_BODY_MASK        /* 2D actor: AABB -> per-pixel mask narrow phase  */
+} Hx421BodyKind;
 
 typedef struct { int32_t x, y, z; } Hx421Vec;      /* Q16.16 world units */
 
@@ -47,8 +57,20 @@ typedef struct {
     int32_t         radius;     /* bounding sphere, Q16.16 — broad-phase + cull */
 } Hx421Mesh;
 
+/* One registry entry, 3D object or 2D actor.
+ *
+ * `pos` means different things per kind, and this is the one place the two
+ * worlds actually touch:
+ *   MESH — world units, Q16.16, all three axes.
+ *   MASK — SCREEN PIXELS in Q16.16 (integer pixel = pos.x >> 16) at the mask's
+ *          top-left corner. z is unused by collision and free for the game to
+ *          use as a sort key.
+ * Keeping actors in Q16.16 pixels rather than plain ints means sub-pixel motion
+ * accumulates properly and the same translate/move_local commands work on them. */
 typedef struct {
-    uint16_t   mesh;
+    uint8_t    kind;        /* Hx421BodyKind                                  */
+    uint16_t   mesh;        /* MESH: index into scene.mesh                    */
+    uint16_t   mask_id;     /* MASK: index into scene.mask                    */
     uint8_t    active;
     uint8_t    visible;     /* drawn by the renderer                          */
     uint8_t    collidable;  /* considered by the collision sweep              */
@@ -72,9 +94,11 @@ typedef struct {
 
 typedef struct {
     Hx421Mesh   mesh[HX421_MAX_MESH];
+    Hx421Mask   mask[HX421_MAX_MASK];
     Hx421Object obj[HX421_MAX_OBJ];
     Hx421Camera cam[HX421_MAX_CAM];
     uint8_t     mesh_count;
+    uint8_t     mask_count;
     uint8_t     active_cam;
 } Hx421Scene;
 
@@ -83,6 +107,13 @@ void     hx421_scene_init(Hx421Scene *s);
 int      hx421_mesh_register(Hx421Scene *s, const Hx421Mesh *m);   /* -> mesh id, <0 fail */
 int      hx421_object_spawn(Hx421Scene *s, int mesh_id);           /* -> object id, <0 fail */
 void     hx421_object_despawn(Hx421Scene *s, int id);
+
+/* 2D actors share the object table, the layer/mask filter and the sweep. The
+ * mask descriptor is COPIED; its bits are not, so they stay wherever they were
+ * staged (PSRAM for the full set, BRAM for the spawned ones) and the registry
+ * holds no artwork. */
+int      hx421_mask_register(Hx421Scene *s, const Hx421Mask *m);   /* -> mask id, <0 fail   */
+int      hx421_actor_spawn(Hx421Scene *s, int mask_id);            /* -> object id, <0 fail */
 
 /* ---- ABSOLUTE: set state outright. Placement, teleports, authored keyframes. */
 void hx421_object_set_pos(Hx421Scene *s, int id, Hx421Vec p);

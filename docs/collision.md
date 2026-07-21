@@ -228,8 +228,23 @@ actors. Wider actors need multi-word rows; worth deferring until something actua
 
 A 2D actor is the same registry entry as a 3D object with a mask instead of a mesh: position,
 flags, layer and mask fields are identical. One table, one broad phase, two narrow phases chosen by
-what the entry carries — so a bullet can test against both sprite actors and mesh geometry without
-the game holding two worlds.
+what the entry carries — so a game with sprite actors and mesh geometry does not hold two worlds.
+
+**Built.** `hx421_actor_spawn` claims an object slot with `kind = HX421_BODY_MASK`, and
+`hx421_broadphase` dispatches on kind: mesh pairs take the sphere test, mask pairs take AABB then
+shift-AND. Two decisions worth recording:
+
+- **A mask body's `pos` is Q16.16 SCREEN PIXELS**, not world units — integer pixel is `pos.x >> 16`,
+  and `z` is free for the game to use as a sort key. Keeping actors in fixed point rather than plain
+  ints means sub-pixel motion accumulates properly and the same `translate`/`move_local` commands
+  work on them.
+- **Mesh-vs-mask pairs are skipped and COUNTED (`cross_skipped`), not tested.** A 3D bounding sphere
+  against a 2D screen-pixel mask has no defined meaning without a projection, and inventing one
+  would produce confidently wrong hits. If a game ever needs it, the projection is the design
+  question to answer first — the counter makes the gap visible instead of letting it look supported.
+
+Actors spawn with `visible = 0` and the renderer re-checks `kind`, because a mask body's `mesh`
+index is meaningless and reading it would rasterise whatever mesh 0 happens to be.
 
 ## Build order
 
