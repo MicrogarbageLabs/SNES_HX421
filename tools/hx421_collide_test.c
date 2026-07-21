@@ -277,7 +277,9 @@ int main(void) {
         hx421_object_set_rot(t, o2, 0, 0, 0);
         hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
         ck(hx421_midphase(t, tl) == 1, "genuinely overlapping boxes survive");
-        ck_near(tl->c[0].normal.x, ONE, 512, "surviving contact carries the box normal");
+        /* b sits at +x of a, so a's separation direction is -x. (This assertion
+         * read +ONE while the phases disagreed about sign.) */
+        ck_near(tl->c[0].normal.x, -ONE, 512, "surviving contact carries the box normal");
         ck_near(tl->c[0].depth, ONE, 256, "and the box depth");
 
         /* a rotation that does NOT separate them must still report a hit --
@@ -368,7 +370,35 @@ int main(void) {
         hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
         hx421_midphase(t, tl);
         ck(tl->count == 1, "pair survives to the narrow phase");
+        /* ---- THE convention check: does the normal actually SEPARATE them? ----
+         * Every phase must agree on which way the normal points. Moving a along
+         * it must reduce the overlap. Getting this backwards is silent — the
+         * push drives the pair together, they never separate, and it reads as
+         * objects vibrating rather than as a sign error. Asserting the normal is
+         * "unit length" or "non-zero" catches none of it. */
+        {
+            const int32_t before = tl->c[0].depth;
+            Hx421Vec step = tl->c[0].normal;
+            /* move a one quarter unit along the contact normal */
+            Hx421Vec np = t->obj[mover].pos;
+            np.x += step.x / 4; np.y += step.y / 4; np.z += step.z / 4;
+            const Hx421Vec keep = t->obj[mover].pos;
+            hx421_object_set_pos(t, mover, np);
+            hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+            hx421_midphase(t, tl);
+            const int32_t after = tl->count ? tl->c[0].depth : 0;
+            ck(after < before, "moving a along the contact normal reduces the overlap");
+            hx421_object_set_pos(t, mover, keep);
+            hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+            hx421_midphase(t, tl);
+        }
+
         hx421_narrowphase(t, tl);
+        /* the narrow-phase set must agree with the mid-phase normal, not oppose
+         * it — that mismatch is exactly what mixed the two conventions */
+        ck(dot_ok(tl->c[0].normals[0], tl->c[0].normal),
+           "narrow-phase normals agree in sign with the mid-phase normal");
+
         /* A flat face-on contact must report exactly ONE normal. Asserting only
          * ">= 1" hides the failure that matters: over-reporting normals makes
          * the resolver see three independent contacts, call it a wedge, and

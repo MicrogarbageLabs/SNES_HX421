@@ -196,7 +196,9 @@ int hx421_midphase(const Hx421Scene *s, Hx421ContactList *io) {
         Hx421Vec n; int32_t dep;
         if (!hx421_obb_test(ca, a->rot, ma->half, cb, b->rot, mb->half, &n, &dep))
             continue;                       /* sphere said maybe, boxes say no */
-        c->normal = n; c->depth = dep;
+        /* obb_test points a->b; store the separation direction for a. */
+        c->normal.x = -n.x; c->normal.y = -n.y; c->normal.z = -n.z;
+        c->depth = dep;
         io->c[keep++] = *c;
     }
     io->count = (uint16_t)keep;
@@ -362,10 +364,24 @@ int hx421_resolve(const Hx421Vec *normals, unsigned n, Hx421Vec v,
     for (unsigned i = 0; i < n && nk < HX421_MAX_NORMALS; ++i) {
         Hx421Vec ni = normals[i];
         if (!normalize16(&ni)) continue;
+
+        /* 0. Ignore any surface the velocity is moving AWAY from.
+         *
+         * Reflecting against a normal you are already separating along reverses
+         * a velocity that was correct, and next frame — still overlapping —
+         * reverses it back. The pair locks together and vibrates instead of
+         * bouncing. Measured before this check: 40 velocity sign flips per
+         * object per second, with per-frame displacement 70x the actual speed.
+         *
+         * It also stops a resting contact from being counted toward the wedge
+         * test, so an object sliding along a wall is not mistaken for trapped. */
+        if (dot16(v, ni) >= 0) continue;
+
         unsigned dup = 0;
         for (unsigned j = 0; j < nk; ++j) if (dot16(keep[j], ni) > 63303) { dup = 1; break; }
         if (!dup) keep[nk++] = ni;
     }
+    /* Nothing being approached: already separating, so leave the velocity be. */
     if (!nk) { if (out) *out = v; return 1; }
 
     /* 2. Orthogonalise (Gram-Schmidt). Two walls at a right angle are already
@@ -438,6 +454,11 @@ int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out,
                 if (!hx421_sphere_test(a->pos, s->mesh[a->mesh].radius,
                                        b->pos, s->mesh[b->mesh].radius,
                                        &cand.normal, &cand.depth)) continue;
+                /* sphere_test gives a->b; the contact convention is the
+                 * separation direction for a, which is the opposite. */
+                cand.normal.x = -cand.normal.x;
+                cand.normal.y = -cand.normal.y;
+                cand.normal.z = -cand.normal.z;
             } else {
                 const Hx421Mask *ma = &s->mask[a->mask_id];
                 const Hx421Mask *mb = &s->mask[b->mask_id];

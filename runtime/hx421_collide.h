@@ -30,8 +30,19 @@
  * resolve — so collecting more would not change the answer. */
 #define HX421_MAX_NORMALS    4u
 
-/* One overlapping pair. `normal` points from a toward b and is the direction
- * that separates them; `depth` is how far they interpenetrate.
+/* One overlapping pair.
+ *
+ * NORMAL CONVENTION — every normal in this struct is the direction A MUST MOVE
+ * to separate from B (equivalently, B's surface normal at the contact). B moves
+ * the opposite way. One convention for the broad, mid and narrow phases, because
+ * mixing them is silent: a push computed with the wrong sign drives the pair
+ * TOGETHER, they never separate, and the result reads as objects vibrating
+ * rather than as a sign error.
+ *
+ * Note this is the OPPOSITE of hx421_sphere_test's raw a->b direction, which
+ * stays a plain geometric primitive.
+ *
+ * `depth` is how far they interpenetrate along that normal.
  *
  * The narrow phase will return a SET of normals per pair rather than one, since
  * picking a single winning plane jitters or tunnels wherever two surfaces meet.
@@ -150,7 +161,12 @@ typedef enum {
  *
  *   v' = v - k * SUM_i (v . n_i) n_i        k = 2 bounce, 1 slide
  *
- * Deduplicates normals within ~15 degrees first: a curved surface approximated
+ * Normals the velocity is moving AWAY from are ignored, which matters more than
+ * it sounds: reflecting along a surface you are already separating from
+ * reverses a correct velocity, and next frame — still overlapping — reverses it
+ * back. Objects lock together and vibrate rather than bouncing.
+ *
+ * Deduplicates normals within ~15 degrees next: a curved surface approximated
  * by several planes would otherwise apply nearly the same correction repeatedly
  * and launch the object. What survives is orthogonalised, so two walls meeting
  * at a right angle resolve exactly, at the same cost as one reflection each.

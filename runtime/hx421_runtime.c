@@ -2096,10 +2096,18 @@ static void hx_r3d_init(void) {
         }
         Hx421Vec p = { c[0], c[1], c[2] };
         hx421_object_set_pos(&g_r3d_scene, g_r3d_obj[i], p);
-        seed = seed * 1103515245u + 12345u;
-        Hx421Vec v = { (int32_t)((seed >> 20) % 1200u) - 600,
-                       (int32_t)((seed >> 8)  % 1200u) - 600,
-                       (int32_t)((seed >> 14) % 1200u) - 600 };
+        /* ~0.02-0.05 world units per frame: a cube crosses its own width in
+         * about a second. The first pass used raw LCG values as Q16.16, giving
+         * 0.014 — so slow that a pair which touched could never separate before
+         * the next frame, and the contact response vibrated them together
+         * instead of bouncing them apart. */
+        int32_t vv[3];
+        for (int k = 0; k < 3; ++k) {
+            seed = seed * 1103515245u + 12345u;
+            vv[k] = (int32_t)((seed >> 9) % (uint32_t)(6 * (65536 / 100)))
+                  - 3 * (65536 / 100);
+        }
+        Hx421Vec v = { vv[0], vv[1], vv[2] };
         hx421_object_set_vel(&g_r3d_scene, g_r3d_obj[i], v);
     }
     Hx421Vec cpos = { 0, 0, -9 * 65536 };
@@ -2206,15 +2214,22 @@ static void hx_r3d_physics(void) {
 
         /* Separate along the contact normal so the pair does not re-collide next
          * frame and stick together — resolving velocity alone leaves them
-         * interpenetrating, and a second bounce would cancel the first. */
+         * interpenetrating.
+         *
+         * A FRACTION of the penetration, not half of it each. Pushing the full
+         * overlap out in one step moved objects far further per frame than their
+         * own speed (measured: 70x), so the push became the motion and the
+         * result read as jitter. Relaxing a quarter per frame converges in a few
+         * frames and stays under the velocity scale. */
         if (k->depth > 0 && k->nnormals) {
             const Hx421Vec n0 = k->normals[0];
-            const int32_t push = k->depth / 2 + 1;
+            const int32_t push = k->depth / 8 + 1;
             const int32_t sx = (int32_t)(((int64_t)n0.x * push) >> 16);
             const int32_t sy = (int32_t)(((int64_t)n0.y * push) >> 16);
             const int32_t sz = (int32_t)(((int64_t)n0.z * push) >> 16);
-            a->pos.x -= sx; a->pos.y -= sy; a->pos.z -= sz;
-            b->pos.x += sx; b->pos.y += sy; b->pos.z += sz;
+            /* normals are the separation direction FOR A; b goes the other way */
+            a->pos.x += sx; a->pos.y += sy; a->pos.z += sz;
+            b->pos.x -= sx; b->pos.y -= sy; b->pos.z -= sz;
         }
     }
 }
