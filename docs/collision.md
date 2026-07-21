@@ -157,8 +157,18 @@ Broad phase first, mask test only on the survivors:
 ```
 
 A 16x16 pair is at most 16 shift-AND-test operations. In fabric a barrel shifter aligns the row and
-the non-zero test is an OR tree, so a 32-wide row resolves in a cycle. With ~20 AABB overlaps in a
-busy frame that is a few hundred operations — beneath measurement.
+the non-zero test is an OR tree, so a 32-wide row resolves in a cycle.
+
+**Built and measured** (`runtime/hx421_mask.c`, `tools/hx421_mask_test.c`): 64 actors of 16x16
+scattered over a 256x224 screen give 2016 AABB tests of which **27 survive (1.3%)** — so the per-
+pixel work runs on ~1 pair in 75. Worst case that is 27 x 16 = **~432 row operations per frame**,
+which confirms the estimate: beneath measurement, and the broad phase is doing exactly the culling
+it exists for.
+
+Rows are loaded into a single 64-bit accumulator with pixel 0 at bit 63, so aligning B into A's
+column space is one shift in the same direction as screen space. Bits past `w` are masked off on
+load — rows are byte-padded, and a mask staged from elsewhere with dirty padding would otherwise
+produce phantom hits in a region no artwork explains.
 
 Return the **first set bit's position** as well as the boolean: that gives a contact point for
 spawning impact effects, which AABB collision cannot provide and which is most of why per-pixel
@@ -230,6 +240,11 @@ Sequenced after the TBDR base and audio validation.
    deciding whether a spatial hash is warranted.
 3. **2D actor masks** — derived in the asset pipeline, AABB then shift-AND. Cheapest piece with
    the most immediate gameplay payoff, and it exercises the registry before the 3D maths lands.
+   DONE: `hx421_derive_mask` composites an actor's parts into one mask (honouring the SNES OBJ
+   16-tile row stride, which is the detail that silently derives a wrong mask), and
+   `hx421_mask_overlap` returns the contact point alongside the boolean. Not yet attached to a
+   registry entry — a 2D actor should become the same entry as a 3D object with a mask instead of
+   a mesh, which is step 6's layer/mask work.
 4. **AABB/OBB mid phase.**
 5. **Collision planes + deflection normals.**
 6. **Passthrough flags, layers and masks.**

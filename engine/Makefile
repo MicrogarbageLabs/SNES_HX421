@@ -162,8 +162,13 @@ $(BUILD)/hx421_collide_test$(EXE): $(TOOLS_DIR)/hx421_collide_test.c \
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
 
+$(BUILD)/hx421_mask_test$(EXE): $(TOOLS_DIR)/hx421_mask_test.c $(RUNTIME_DIR)/hx421_mask.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
+
 RUNTIME_TESTS := $(BUILD)/hx421_metatile_test$(EXE) $(BUILD)/hx421_raster_test$(EXE) \
-                 $(BUILD)/hx421_scene3d_test$(EXE) $(BUILD)/hx421_collide_test$(EXE)
+                 $(BUILD)/hx421_scene3d_test$(EXE) $(BUILD)/hx421_collide_test$(EXE) \
+                 $(BUILD)/hx421_mask_test$(EXE)
 
 .PHONY: runtimetest
 runtimetest: $(RUNTIME_TESTS)
