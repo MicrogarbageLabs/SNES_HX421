@@ -23,15 +23,31 @@
 #define TEX_W      64
 #define TEX_H      64
 #define SCREEN_W  240
-#define SCREEN_H  200
+#define SCREEN_H  208                   /* 8/8 letterbox, matching the FMV path */
 #define TILE        8
-#define ROWS      (SCREEN_H / TILE)     /* 25 */
+#define ROWS      (SCREEN_H / TILE)     /* 26 */
 #define COLS      (SCREEN_W / TILE)     /* 30 */
+#define MAX_WALL_H ROWS                 /* a wall can fill the view */
 
-/* SNES VRAM and what the rest of the design costs. */
+/* SNES VRAM and what the rest of the design costs.
+ *
+ * A 32x32 tilemap occupies 2 KB whatever the visible height, so 208 vs 200 costs
+ * no VRAM — only 64 more bytes of tilemap DMA per layer, and 8 fewer blank
+ * lines to do it in. BG3 (floor/ceiling) is STATIC, so its tilemap is uploaded
+ * once and never counts against the per-frame budget. */
 #define VRAM_BYTES     65536
 #define TILEMAP_BYTES   2048            /* 32x32 words, per layer */
-#define SHADE_CHR       (16 * 32)       /* 16 solid shade tiles   */
+#define SHADE_CHR       (16 * 32)       /* 16 solid shade tiles, 4bpp */
+#define FLOOR_CHR       (4 * 16)        /* 4 solid tiles, 2bpp BG3    */
+#define N_TILEMAPS      3               /* BG1 walls, BG2 shade, BG3 floor */
+
+/* Per-frame DMA. Only BG1 and BG2 are rewritten; BG3 is static. Rows are
+ * written full-width (32) because a partial row is not contiguous. */
+#define DYN_TILEMAPS    2
+#define DMA_PER_FRAME   (DYN_TILEMAPS * ROWS * 32 * 2)
+/* Measured blank-line DMA rate from snes/dma_rate_test.s on bsnes-accuracy. */
+#define BYTES_PER_LINE  163
+#define BLANK_LINES     (262 - SCREEN_H)
 
 /* ---- synthetic wall textures, 15 colours + transparent ------------------ */
 
@@ -138,7 +154,7 @@ static void report(const char *label, int ntex, int hstep, int hvar, int max_h) 
     for (int i = 0; i < ntex; ++i) bake(tex[i], hstep, hvar, max_h);
 
     const unsigned chr = n_set * 32u;
-    const unsigned other = 2u * TILEMAP_BYTES + SHADE_CHR;
+    const unsigned other = N_TILEMAPS * TILEMAP_BYTES + SHADE_CHR + FLOOR_CHR;
     const unsigned avail = VRAM_BYTES - other;
     printf("%-26s | %2d tex | step %d | %d hvar | %6u gen -> %5u distinct "
            "(%4.1f%%) | %5.1f KB CHR | %s\n",
@@ -152,28 +168,36 @@ int main(void) {
     for (int i = 0; i < 8; ++i) make_distinct(i);
     n_tex = 8;
 
-    const unsigned other = 2u * TILEMAP_BYTES + SHADE_CHR;
-    printf("VRAM %u B - two tilemaps (%u) - shade CHR (%u) = %u B for wall strips"
-           " (%u tiles)\n\n", VRAM_BYTES, 2u * TILEMAP_BYTES, SHADE_CHR,
+    const unsigned other = N_TILEMAPS * TILEMAP_BYTES + SHADE_CHR + FLOOR_CHR;
+    printf("%dx%d (%dx%d tiles)\n", SCREEN_W, SCREEN_H, COLS, ROWS);
+    printf("VRAM %u B - %d tilemaps (%u) - shade CHR (%u) - floor CHR (%u)"
+           " = %u B for wall strips (%u tiles)\n",
+           VRAM_BYTES, N_TILEMAPS, N_TILEMAPS * TILEMAP_BYTES, SHADE_CHR, FLOOR_CHR,
            VRAM_BYTES - other, (VRAM_BYTES - other) / 32u);
+    printf("per-frame DMA: %u B (BG1+BG2 tilemaps; BG3 floor is STATIC)\n",
+           (unsigned)DMA_PER_FRAME);
+    printf("blank-line budget: %d lines x %d B = %u B  -> %s, %u B spare for OAM\n\n",
+           BLANK_LINES, BYTES_PER_LINE, (unsigned)(BLANK_LINES * BYTES_PER_LINE),
+           (BLANK_LINES * BYTES_PER_LINE) > DMA_PER_FRAME ? "FITS at 60 fps" : "OVER BUDGET",
+           (unsigned)(BLANK_LINES * BYTES_PER_LINE - DMA_PER_FRAME));
 
     printf("-- horizontal detail is the multiplier that decides this --\n");
-    for (int hv = 1; hv <= 8; hv *= 2) report("mixed textures", 4, 2, hv, 24);
+    for (int hv = 1; hv <= 8; hv *= 2) report("mixed textures", 4, 2, hv, MAX_WALL_H);
 
     printf("\n-- height quantisation: 16 px steps vs 8 px steps --\n");
-    report("16 px steps (aligned)", 4, 2, 2, 24);
-    report("8 px steps", 4, 1, 2, 24);
+    report("16 px steps (aligned)", 4, 2, 2, MAX_WALL_H);
+    report("8 px steps", 4, 1, 2, MAX_WALL_H);
 
     printf("\n-- how many textures fit, at 2 horizontal variants --\n");
-    for (int nt = 1; nt <= 8; ++nt) report("texture count", nt, 2, 2, 24);
+    for (int nt = 1; nt <= 8; ++nt) report("texture count", nt, 2, 2, MAX_WALL_H);
 
     printf("\n-- the cheap case: horizontally uniform (banded) textures only --\n");
     for (int i = 0; i < 8; ++i) make_bands(tex[i], i);
-    for (int nt = 2; nt <= 8; nt += 2) report("banded only", nt, 2, 1, 24);
+    for (int nt = 2; nt <= 8; nt += 2) report("banded only", nt, 2, 1, MAX_WALL_H);
 
     printf("\n-- the expensive case: distinct high-frequency noise --\n");
     for (int i = 0; i < 8; ++i) make_noise(tex[i], i);
-    for (int nt = 1; nt <= 8; ++nt) report("noise", nt, 2, 4, 24);
+    for (int nt = 1; nt <= 8; ++nt) report("noise", nt, 2, 4, MAX_WALL_H);
 
     return 0;
 }

@@ -4,15 +4,32 @@ A second, separate render path from the [TBDR](tbdr.md). Where the polygon rende
 every frame and pays for it in vblank bursts, the raycaster keeps its entire tileset **resident** and
 rewrites only tilemaps. That is what buys a locked 60 fps.
 
+Resolution is **240x208**, an 8/8 letterbox, matching the FMV path — the kernel already handles that
+letterbox and it is proven on hardware.
+
 ```
-BG1  4bpp  wall strips, pre-scaled, RESIDENT       tilemap rewritten per frame (2 KB)
-BG2  4bpp  16 solid shade tiles, RESIDENT (512 B)  tilemap rewritten per frame (2 KB)
-           colour math blends them
+                                              CHR         tilemap per frame
+BG1  4bpp  wall strips, pre-scaled, RESIDENT  ~19-31 KB   1664 B  (rewritten)
+BG2  4bpp  16 solid shade tiles, RESIDENT        512 B    1664 B  (rewritten)
+BG3  2bpp  floor/ceiling, RESIDENT                64 B       0 B  (STATIC)
 OBJ        enemies, pickups, weapon
+           main = BG1 + BG3 + OBJ,  sub = BG2,  colour math subtracts
 ```
 
-Per-frame cost is **4 KB of tilemap** against a measured ~6.2 KB vblank budget, leaving ~2 KB for
-OAM. No CHR upload at all in the steady state.
+```
+per-frame DMA   3328 B
+blank budget    54 lines x 163 B = 8802 B     (measured, snes/dma_rate_test.s)
+                -> 38% used, 5474 B spare for OAM
+```
+
+No CHR upload at all in the steady state, and enough headroom left that BG3 could be made dynamic
+later (+1664 B, still only 57%) if a scrolling floor pattern ever turns out to be worth it.
+
+**208 vs 200 is a small cost, not a saving.** A 32x32 tilemap occupies 2 KB whatever the visible
+height, so the extra row costs no VRAM — only 64 more bytes of tilemap DMA per layer, 8 fewer blank
+lines to do it in, and one more wall scale bucket (18.9 KB vs 17.0 KB of strips at four textures).
+Against 224 it is a real saving on both counts; against 200 it buys 8 more pixels of view for about
+2 KB of strips. With 38% of the DMA budget in use either way, take the view.
 
 ## Why the tileset can be resident
 
@@ -64,6 +81,37 @@ index per cell.
 Granularity is 8x8, not per-pixel. For distance shading in a raycaster that is the natural
 granularity anyway, since a whole 8-pixel column is one ray bucket.
 
+### One shade layer covers walls AND floor
+
+BG2 sits on the sub screen, so it shades whatever the main screen puts under it — walls from BG1,
+floor and ceiling from BG3 — without caring which. Filling its tilemap is then one rule per cell:
+
+```
+for each cell (col, row):
+    if row is inside this column's wall span -> shade from the WALL's ray distance
+    else                                     -> shade from the ROW  (floor/ceiling)
+```
+
+**Floor shading is a function of screen row alone.** For a flat floor at fixed eye height the
+distance to the floor point on row y goes as 1/(y - horizon), so the floor's shade bands are
+horizontal — and they do not change as the player moves. That is why extending the shade layer over
+the floor is free: those cells were being written anyway, and their values are a static per-row
+table the ray loop never has to compute.
+
+### Why BG3 can be static
+
+The same argument makes the floor layer itself static. Without per-pixel floor casting there is no
+perspective floor texture to scroll, so BG3 carries a floor/ceiling colour split about the horizon —
+a handful of solid 2bpp tiles, a tilemap uploaded once at level load, and zero per-frame DMA. All
+the apparent depth comes from BG2's shade bands on top of it.
+
+Layer order works out without a fight: in Mode 1, BG3 is the lowest priority unless the BGMODE
+priority bit is set, so walls draw over the floor by default. BG2 never enters main-screen priority
+at all, since it only exists on the sub screen.
+
+Sprites can be included in colour math too (CGADSUB has an OBJ bit), so a distant enemy darkens with
+the wall behind it rather than sitting on top at full brightness.
+
 ## What this does NOT need
 
 - **No scrolling.** 30x25 tiles fits inside one 32x32 tilemap, and the whole map is rewritten each
@@ -85,9 +133,13 @@ Dropping the 2D collider frees no VRAM. Dropping a wall texture frees no logic e
 
 ## Open questions
 
-- Floors and ceilings. Mode 1 gives BG3 as a 2bpp layer, which could carry a horizon gradient, but
-  it competes for colour-math participation. Unresolved.
 - Wall height quantisation makes walls "pop" between scale buckets as the player moves. 8-pixel steps
-  soften it; whether that reads as acceptable is an eyeball question, not a measurement.
+  soften it and fit (31.4 KB at four textures); whether that reads as acceptable is an eyeball
+  question, not a measurement.
+- BG3 gives 3 colours plus transparent. Whether floor and ceiling can share that convincingly, or
+  whether the ceiling should just be the backdrop, is an art decision.
 - Whether the strip bake belongs in the asset pipeline (baked to PSRAM at build time) or is generated
   on the cart at level load. PSRAM has room either way; build time is simpler.
+- Doors and thin walls. A door at a different depth from its wall plane needs its own scale bucket
+  set, which is cheap, but sliding doors need a horizontal offset the strip scheme does not have.
+  Unresolved and worth settling before the bake format is fixed.
