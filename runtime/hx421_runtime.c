@@ -2035,9 +2035,14 @@ static const Hx421Vec r3d_cube_v[8] = {
     {-R3D_U,-R3D_U,-R3D_U},{ R3D_U,-R3D_U,-R3D_U},{ R3D_U, R3D_U,-R3D_U},{-R3D_U, R3D_U,-R3D_U},
     {-R3D_U,-R3D_U, R3D_U},{ R3D_U,-R3D_U, R3D_U},{ R3D_U, R3D_U, R3D_U},{-R3D_U, R3D_U, R3D_U},
 };
+/* Wound CCW as seen from OUTSIDE, so (v1-v0) x (v2-v0) points out of the solid.
+ * This list was previously inverted, which had two visible consequences: the
+ * renderer culled every front face and drew the cube's INTERIOR (it looked like
+ * a box flaring open front-to-back), and hx421_mesh_fit_planes derived collision
+ * normals pointing inward. */
 static const uint16_t r3d_cube_f[36] = {
-    0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
-    3,2,6, 3,6,7,  0,3,7, 0,7,4,  1,5,6, 1,6,2,
+    0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,5,4, 0,1,5,
+    3,6,2, 3,7,6,  0,7,3, 0,4,7,  1,6,5, 1,2,6,
 };
 static const uint8_t r3d_cube_c[12] = { 2,2, 3,3, 4,4, 5,5, 6,6, 7,7 };
 

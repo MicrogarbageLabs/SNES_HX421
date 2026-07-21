@@ -162,7 +162,8 @@ $(BUILD)/hx421_raster_test$(EXE): $(TOOLS_DIR)/hx421_raster_test.c $(RUNTIME_DIR
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
 
-$(BUILD)/hx421_scene3d_test$(EXE): $(TOOLS_DIR)/hx421_scene3d_test.c $(RUNTIME_DIR)/hx421_scene3d.c
+$(BUILD)/hx421_scene3d_test$(EXE): $(TOOLS_DIR)/hx421_scene3d_test.c \
+                                   $(RUNTIME_DIR)/hx421_scene3d.c $(RUNTIME_DIR)/hx421_raster.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
 

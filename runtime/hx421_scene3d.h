@@ -47,7 +47,14 @@ typedef struct { int32_t m[9]; } Hx421Mat;
 
 /* A mesh's geometry. Vertices are model-space Q16.16; each face is three
  * vertex indices plus a palette index. Faces are flat-shaded — the renderer is
- * untextured, so colour is per face, not per vertex. */
+ * untextured, so colour is per face, not per vertex.
+ *
+ * WINDING: each face must be counter-clockwise as seen from OUTSIDE the solid,
+ * so that (v1 - v0) x (v2 - v0) points outward. Get it backwards and the effect
+ * is not "nothing draws" — the renderer culls the front faces and draws the
+ * INTERIOR, which looks like a box flaring open from front to back, and
+ * hx421_mesh_fit_planes derives collision normals pointing the wrong way. Both
+ * are easy to mistake for a projection bug. */
 /* A collision plane in MODEL space: points with dot(n, p) > d are outside.
  * A mesh carries only the few large flat surfaces that matter for bouncing, not
  * its full hull — the narrow phase is a handful of dot products, never a

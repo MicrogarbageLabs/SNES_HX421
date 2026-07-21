@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../runtime/hx421_scene3d.h"
+#include "../runtime/hx421_raster.h"
 
 static int fails = 0, checks = 0;
 static void ck(int cond, const char *what) {
@@ -38,9 +39,10 @@ static const Hx421Vec cube_v[8] = {
     {-ONE,-ONE,-ONE},{ ONE,-ONE,-ONE},{ ONE, ONE,-ONE},{-ONE, ONE,-ONE},
     {-ONE,-ONE, ONE},{ ONE,-ONE, ONE},{ ONE, ONE, ONE},{-ONE, ONE, ONE},
 };
+/* CCW from OUTSIDE: (v1-v0) x (v2-v0) points out of the solid. */
 static const uint16_t cube_f[36] = {
-    0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
-    3,2,6, 3,6,7,  0,3,7, 0,7,4,  1,5,6, 1,6,2,
+    0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,5,4, 0,1,5,
+    3,6,2, 3,7,6,  0,7,3, 0,4,7,  1,6,5, 1,2,6,
 };
 static const uint8_t cube_c[12] = {1,1,2,2,3,3,4,4,5,5,6,6};
 
@@ -184,6 +186,37 @@ int main(void) {
     Hx421Tri tris[HX421_MAX_TRIS];
     int n = hx421_scene_render(s, tris, HX421_MAX_TRIS, 256, 208);
     ck(n == 12, "a cube in front of the camera emits all 12 triangles");
+
+    /* ---- WINDING: a closed convex solid must show only its OUTSIDE ----
+     * Viewed face-on and centred, a cube presents exactly one face; the four
+     * sides are edge-on and the back is hidden. If the winding is inverted the
+     * renderer culls the front faces and draws the INTERIOR instead — the cube
+     * appears to flare open from front to back, which reads as a projection or
+     * perspective bug rather than as a winding one. Counting the distinct
+     * colours that survive back-face culling is what catches it; "12 triangles
+     * were emitted" does not, because the same 12 are emitted either way. */
+    {
+        for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) s->obj[i].active = 0;
+        int w = hx421_object_spawn(s, mid);
+        hx421_object_set_pos(s, w, V(0,0,0));
+        hx421_object_set_rot(s, w, 0, 0, 0);
+        int nn = hx421_scene_render(s, tris, HX421_MAX_TRIS, 256, 208);
+
+        /* rasterise the whole frame and collect which colours actually land */
+        int seen[16] = {0}, ncolours = 0;
+        uint8_t idx[HX421_TPIX]; uint16_t zb[HX421_TPIX];
+        for (int ty = 0; ty < 26; ++ty)
+            for (int tx = 0; tx < 32; ++tx) {
+                hx421_tile_clear(idx, zb);
+                hx421_raster_tile(tris, nn, tx, ty, idx, zb);
+                for (unsigned q = 0; q < HX421_TPIX; ++q)
+                    if (idx[q] && !seen[idx[q] & 15]) { seen[idx[q] & 15] = 1; ncolours++; }
+            }
+        ck(ncolours == 1, "a face-on cube shows exactly one face, not its interior");
+        /* cube_c gives the z=-1 face pair colour 1, and that face is the one
+         * facing the camera at z=-8. */
+        ck(seen[1], "and it is the face nearest the camera");
+    }
 
     /* Projected geometry must land on screen and straddle the centre. */
     int32_t minx = 1<<30, maxx = -(1<<30);
