@@ -112,6 +112,54 @@ at all, since it only exists on the sub screen.
 Sprites can be included in colour math too (CGADSUB has an OBJ bit), so a distant enemy darkens with
 the wall behind it rather than sitting on top at full brightness.
 
+## Enemies: streamed, scaled sprites
+
+SNES OBJ hardware cannot scale, so a billboarded enemy needs its CHR re-rendered whenever its
+on-screen size changes. The coprocessor's 2D scaler does that from the source art in PSRAM into the
+staging buffer, reusing the same path the TBDR uses for tile CHR.
+
+The naive budget says this is tight: a 64x64 sprite is 2048 B against 4930 B per frame, so two.
+**That is the wrong number.** An enemy only needs re-uploading when its scale bucket changes or its
+animation frame advances — not every frame. Measured over a minute of simulated play
+(`tools/hx421_spritestream.c`):
+
+```
+scenario                     mean    p95    p99   worst   frames over budget
+8 enemies,  8 fps anim       355 B  2432   3264   3840    0 / 3600
+12 enemies, 8 fps anim       510 B  2944   3712   4800    0 / 3600
+8 enemies, 30 fps anim      1152 B  3296   3680   4352    0 / 3600
+8 enemies, charging fast     492 B  2304   3744   5920   11 / 3600  (0.3%)
+```
+
+**The median is zero** — in most frames nothing crosses a bucket or advances a pose. Eight enemies
+cost about 7% of the CHR budget on average.
+
+- **Animation rate dominates, not movement.** 8 -> 30 fps animation triples the mean; slow -> fast
+  movement adds only 30%. An enemy walking toward the player holds each scale bucket for many frames.
+- **The resident pool is small**: 6.2 KB peak at 12 enemies, against a hard 16 KB cap — SNES OBJ
+  addresses only two tables of 256 tiles, so that ceiling holds no matter how much VRAM is spare.
+- **No double buffering needed.** Worst case fits inside one blank period, so an upload always
+  completes before anything displays.
+
+### Deferral, for the 0.3%
+
+When everything charges at once the frame can want more than 4930 B. The response is to defer, not
+to find more bandwidth: sort pending updates by on-screen size and drop the smallest past the
+budget. A distant enemy showing its previous scale bucket for one frame is invisible; a near one
+tearing is not. This is the same shape as the FMV band scheduling, and the deferred count should be
+reported rather than silently dropped — a silent cap reads as "it always keeps up".
+
+### The per-scanline limit is the real cap
+
+Bandwidth is not what limits enemy count on screen — **the OBJ per-scanline limit is**. The SNES
+renders at most 32 sprites and 34 8x8 slivers per scanline. A 64x64 sprite is 8 slivers wide on each
+of its 64 lines, so **four large enemies abreast already reach the sliver limit** and the fifth drops
+out. Mid-distance 32x32 enemies are 4 slivers, giving eight abreast.
+
+This bites exactly when a raycaster is most dramatic — several enemies close and level with the
+player — so encounter design should spread them in depth, and the engine should drop by distance
+rather than letting the PPU drop by OAM index.
+
 ## What this does NOT need
 
 - **No scrolling.** 30x25 tiles fits inside one 32x32 tilemap, and the whole map is rewritten each
