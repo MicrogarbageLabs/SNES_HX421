@@ -44,3 +44,5 @@ obj/
 *~
 Thumbs.db
 desktop.ini
+
+snes/build/
