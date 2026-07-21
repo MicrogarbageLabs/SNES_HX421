@@ -2169,6 +2169,10 @@ static void hx_r3d_init(void) {
 static void hx_r3d_physics(void) {
     Hx421Scene *s = &g_r3d_scene;
 
+    /* relative commands: no accumulated angle for the caller to track */
+    for (int i = 0; i < g_r3d_count; ++i)
+        hx421_object_rotate(s, g_r3d_obj[i], 3 + (i & 3), 2, 0);
+
     for (int i = 0; i < g_r3d_count; ++i) {
         const int id = g_r3d_obj[i];
         hx421_object_translate(s, id, s->obj[id].vel);
@@ -2244,13 +2248,9 @@ static void hx_r3d_advance(void) {
     }
 }
 
-/* Animate, transform, rasterise. Called once per FRAME, not per burst. */
+/* Transform and rasterise. Called once per RENDERED frame, not per burst — and
+ * deliberately NOT where the simulation advances (see hx_r3d_physics). */
 static void hx_r3d_build_frame(void) {
-    /* relative commands: no accumulated angle for the caller to track */
-    for (int i = 0; i < g_r3d_count; ++i)
-        hx421_object_rotate(&g_r3d_scene, g_r3d_obj[i], 3 + (i & 3), 2, 0);
-
-    hx_r3d_physics();
 
     int n = hx421_scene_render(&g_r3d_scene, g_r3d_tris, HX421_MAX_TRIS,
                                (int)(R3D_TILES_W * 8), (int)(R3D_TILES_H * 8));
@@ -2307,6 +2307,21 @@ static void hx_emit_r3d_burst(uint32_t base, int burst, uint32_t chr_off, uint32
 static void hx_produce_r3d_burst(void) {
     if (!g_rom_loaded) return;
     uint32_t base = g_back ? HX_BUF1_BASE : HX_BUF0_BASE;
+
+    /* FIXED-RATE SIMULATION, VARIABLE-RATE RENDER.
+     *
+     * This runs every burst — i.e. every SNES frame, 60 Hz — while the picture
+     * is only rebuilt when a frame completes. Tying the simulation to rendered
+     * frames instead made the whole world run at HALF SPEED whenever a frame
+     * needed two bursts, so the scene visibly sped up and slowed down as
+     * complexity changed. Objects should move at a constant rate and simply be
+     * SAMPLED less often when the renderer is busy.
+     *
+     * It is safe to advance between bursts of one frame: build_frame snapshots
+     * the geometry into g_r3d_out at burst 0, and later bursts only stage CHR
+     * from that snapshot. This is also the shape the real hardware wants — game
+     * logic on the ARM at a fixed tick, rendering completing across N vblanks. */
+    hx_r3d_physics();
 
     if (g_r3d_burst == 0) hx_r3d_build_frame();
 
