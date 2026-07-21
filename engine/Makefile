@@ -141,5 +141,39 @@ $(BUILD)/hx421_host_test$(EXE): $(TOOLS_DIR)/hx421_host_test.c $(BUILD)/hx421.dl
 dlltest: $(BUILD)/hx421_host_test$(EXE)
 	cd $(BUILD) && ./hx421_host_test$(EXE)
 
+# ---- runtime suites: the integer reference blocks that double as RTL spec ----
+# These live in ../tools and were previously built by hand, which meant nothing
+# noticed when one stopped compiling. Each is self-contained: its own main, and
+# it links only the runtime TUs it exercises.
+$(BUILD)/hx421_metatile_test$(EXE): $(TOOLS_DIR)/hx421_metatile_test.c $(RUNTIME_DIR)/hx421_metatile.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
+
+$(BUILD)/hx421_raster_test$(EXE): $(TOOLS_DIR)/hx421_raster_test.c $(RUNTIME_DIR)/hx421_raster.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
+
+$(BUILD)/hx421_scene3d_test$(EXE): $(TOOLS_DIR)/hx421_scene3d_test.c $(RUNTIME_DIR)/hx421_scene3d.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
+
+$(BUILD)/hx421_collide_test$(EXE): $(TOOLS_DIR)/hx421_collide_test.c \
+                                   $(RUNTIME_DIR)/hx421_collide.c $(RUNTIME_DIR)/hx421_scene3d.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
+
+RUNTIME_TESTS := $(BUILD)/hx421_metatile_test$(EXE) $(BUILD)/hx421_raster_test$(EXE) \
+                 $(BUILD)/hx421_scene3d_test$(EXE) $(BUILD)/hx421_collide_test$(EXE)
+
+.PHONY: runtimetest
+runtimetest: $(RUNTIME_TESTS)
+	@fail=0; \
+	for t in $(RUNTIME_TESTS); do \
+	  echo "==== $$t ===="; \
+	  "./$$t" || fail=1; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "ALL RUNTIME SUITES PASSED"; else echo "SOME RUNTIME SUITES FAILED"; fi; \
+	exit $$fail
+
 clean:
 	rm -rf $(BUILD)

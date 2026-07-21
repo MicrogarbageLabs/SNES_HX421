@@ -129,6 +129,12 @@ int hx421_object_spawn(Hx421Scene *s, int mesh_id) {
     for (unsigned i = 0; i < HX421_MAX_OBJ; ++i) {
         if (s->obj[i].active) continue;
         s->obj[i].active = 1; s->obj[i].visible = 1;
+        /* Collidable by default on layer 0 against everything: a spawned object
+         * that silently does not collide is a far more confusing default than
+         * one that collides too eagerly. */
+        s->obj[i].collidable = 1;
+        s->obj[i].layer = 0;
+        s->obj[i].mask  = 0xFF;
         s->obj[i].mesh = (uint16_t)mesh_id;
         s->obj[i].pos.x = s->obj[i].pos.y = s->obj[i].pos.z = 0;
         s->obj[i].rot = mat_identity();

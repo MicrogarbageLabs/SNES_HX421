@@ -38,9 +38,20 @@ mid     AABB or OBB overlap   6 compares / SAT     confirm
 narrow  plane set             dot products         deflection normal only
 ```
 
-Cost is trivial at this scale: 64 objects pairwise is 2016 pairs, and a sphere test is ~10 cycles,
-so a naive all-pairs broad phase is **~0.5 ms at 40 MHz**. A spatial hash cuts it further but is not
-needed until object counts are much higher — worth *not* building until measured.
+Cost is small at this scale: 64 objects pairwise is 2016 pairs. A spatial hash cuts it further but
+is not needed until object counts are much higher — worth *not* building until measured.
+
+**Built and measured** (`runtime/hx421_collide.c`, `tools/hx421_collide_test.c`): a full sweep over
+64 objects performs exactly 2016 tests, confirming the pair count. The per-test cost estimate was
+optimistic, though — the reject path is 3 shifts, 3 multiplies, 3 adds and a compare, plus the two
+layer/mask checks, so **~20 cycles rather than ~10**, putting a full sweep nearer **1 ms at 40 MHz**
+than 0.5 ms. Still affordable once per frame, and still not a reason to build the spatial hash yet,
+but the real figure is worth carrying rather than the estimate.
+
+The reject is deliberately square-root-free: `hx421_sqrt_q16` runs only on pairs that actually
+overlap, which in a typical frame is a handful. Filtering is layer/mask based and **both sides must
+accept the other** — a one-sided rule makes the relationship asymmetric, and "the bullet hits the
+wall but the wall does not hit the bullet" is a miserable thing to debug.
 
 The FPGA's **56 idle 18x18 multipliers** are what makes this cheap: dot products and transforms map
 straight onto them without consuming LEs.

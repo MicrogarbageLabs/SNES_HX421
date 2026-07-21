@@ -50,7 +50,10 @@ typedef struct {
 typedef struct {
     uint16_t   mesh;
     uint8_t    active;
-    uint8_t    visible;
+    uint8_t    visible;     /* drawn by the renderer                          */
+    uint8_t    collidable;  /* considered by the collision sweep              */
+    uint8_t    layer;       /* which layer THIS object belongs to (0..7)      */
+    uint8_t    mask;        /* bitmask of layers this object collides WITH    */
     Hx421Vec   pos;
     Hx421Mat   rot;
 } Hx421Object;
