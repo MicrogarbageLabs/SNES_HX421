@@ -2048,7 +2048,7 @@ static void hx_r3d_init(void) {
     Hx421Mesh cube;
     cube.verts = r3d_cube_v; cube.vcount = 8;
     cube.faces = r3d_cube_f; cube.colors = r3d_cube_c; cube.fcount = 12;
-    cube.radius = 113512;                          /* sqrt(3) in Q16.16 */
+    hx421_mesh_fit_bounds(&cube);   /* derived, so bounds cannot drift from art */
     int mid = hx421_mesh_register(&g_r3d_scene, &cube);
 
     /* three instances of ONE mesh — the registry's whole point */

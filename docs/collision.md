@@ -34,9 +34,28 @@ copy of the geometry.
 
 ```
 broad   sphere vs sphere      3 mul + compare      cull almost everything
-mid     AABB or OBB overlap   6 compares / SAT     confirm
+mid     OBB overlap (SAT)     15 axes              confirm
 narrow  plane set             dot products         deflection normal only
 ```
+
+**Mid phase built** (`hx421_obb_test`, `hx421_midphase`). Boxes are **oriented, not axis-aligned**:
+these objects rotate, and an AABB around a tumbling ship grows and shrinks with its heading, which
+reads in play as collision getting mysteriously sloppy at 45 degrees. The discriminating test in the
+suite is two unit cubes 3.39 apart on a diagonal with one yawed 45 degrees — the bounding spheres
+say maybe, an AABB would say hit, the oriented boxes correctly say no.
+
+All 15 axes decide the boolean; an edge-edge case separates boxes that every face axis calls
+overlapping, so dropping the 9 cross products would give phantom hits. The returned normal is the
+shallowest of the **6 face axes only**, which are unit vectors — cross-product axes are not, and
+comparing their raw overlaps picks the wrong winner unless each is normalised, which is nine square
+roots to shave a little off a push-out distance. Any axis with its overlap is a valid separation, so
+this trades minimality for cost deliberately rather than by accident.
+
+Bounds are **derived, never authored** — `hx421_mesh_fit_bounds` computes half-extents, centre and
+radius from the vertex list, for the same reason sprite masks are derived: hand-set bounds that
+disagree with the geometry give collisions slightly off the visible shape. The sphere is centred on
+the box centre rather than the model origin, so an off-origin mesh does not get a needlessly fat
+sphere that the mid phase then has to reject.
 
 Cost is small at this scale: 64 objects pairwise is 2016 pairs. A spatial hash cuts it further but
 is not needed until object counts are much higher — worth *not* building until measured.

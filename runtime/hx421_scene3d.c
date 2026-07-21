@@ -125,6 +125,40 @@ int hx421_mesh_register(Hx421Scene *s, const Hx421Mesh *m) {
     s->mesh[s->mesh_count] = *m;
     return (int)s->mesh_count++;
 }
+void hx421_mesh_fit_bounds(Hx421Mesh *m) {
+    if (!m || !m->verts || !m->vcount) return;
+    int32_t lo_x = m->verts[0].x, hi_x = lo_x;
+    int32_t lo_y = m->verts[0].y, hi_y = lo_y;
+    int32_t lo_z = m->verts[0].z, hi_z = lo_z;
+    for (uint16_t i = 1; i < m->vcount; ++i) {
+        const Hx421Vec v = m->verts[i];
+        if (v.x < lo_x) lo_x = v.x;  if (v.x > hi_x) hi_x = v.x;
+        if (v.y < lo_y) lo_y = v.y;  if (v.y > hi_y) hi_y = v.y;
+        if (v.z < lo_z) lo_z = v.z;  if (v.z > hi_z) hi_z = v.z;
+    }
+    m->centre.x = lo_x + (hi_x - lo_x) / 2;
+    m->centre.y = lo_y + (hi_y - lo_y) / 2;
+    m->centre.z = lo_z + (hi_z - lo_z) / 2;
+    m->half.x = (hi_x - lo_x) / 2;
+    m->half.y = (hi_y - lo_y) / 2;
+    m->half.z = (hi_z - lo_z) / 2;
+
+    /* Sphere about the box centre: the farthest vertex from it, not the corner
+     * of the box. A box-corner radius over-estimates by up to sqrt(3) and would
+     * make the broad phase pass pairs the mid phase then has to reject. */
+    int64_t worst = 0;
+    for (uint16_t i = 0; i < m->vcount; ++i) {
+        const int64_t dx = (m->verts[i].x - m->centre.x) >> 8;
+        const int64_t dy = (m->verts[i].y - m->centre.y) >> 8;
+        const int64_t dz = (m->verts[i].z - m->centre.z) >> 8;
+        const int64_t d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 > worst) worst = d2;
+    }
+    int64_t r = 0;
+    while ((r + 1) * (r + 1) <= worst) r++;      /* integer sqrt, Q16.8 */
+    m->radius = (int32_t)(r << 8);
+}
+
 int hx421_mask_register(Hx421Scene *s, const Hx421Mask *m) {
     if (!s || !m || !m->bits || s->mask_count >= HX421_MAX_MASK) return -1;
     s->mask[s->mask_count] = *m;          /* descriptor only; bits stay put */

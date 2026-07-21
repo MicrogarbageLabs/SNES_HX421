@@ -54,8 +54,19 @@ typedef struct {
     const uint16_t *faces;      /* 3 indices per face */
     const uint8_t  *colors;     /* 1 per face, palette index 1..15 */
     uint16_t        fcount;
-    int32_t         radius;     /* bounding sphere, Q16.16 — broad-phase + cull */
+    /* Bounds. Prefer hx421_mesh_fit_bounds() over setting these by hand: bounds
+     * that disagree with the geometry give collisions slightly off the visible
+     * shape, which is the same drift problem authored sprite masks have. */
+    int32_t         radius;     /* bounding sphere, Q16.16 — broad phase + cull */
+    Hx421Vec        half;       /* OBB half-extents about `centre`, Q16.16      */
+    Hx421Vec        centre;     /* box centre in model space (verts may be off-origin) */
 } Hx421Mesh;
+
+/* Derive radius, half-extents and centre from the vertex list. Call after
+ * filling verts/vcount and before registering. The sphere is centred on the box
+ * centre rather than the model origin, so an off-origin mesh does not get a
+ * needlessly fat bounding sphere. */
+void hx421_mesh_fit_bounds(Hx421Mesh *m);
 
 /* One registry entry, 3D object or 2D actor.
  *

@@ -25,7 +25,7 @@ static const uint16_t pf[3] = {0,1,2};
 static const uint8_t  pc[1] = {1};
 
 static Hx421Mesh mesh_r(int32_t radius) {
-    Hx421Mesh m = { pv, 3, pf, pc, 1, radius };
+    Hx421Mesh m = { pv, 3, pf, pc, 1, radius, {radius, radius, radius}, {0,0,0} };
     return m;
 }
 
@@ -194,6 +194,99 @@ int main(void) {
         int nt = hx421_scene_render(s, tr, HX421_MAX_TRIS, 256, 208);
         ck(nt == 1, "render emits the mesh object only, not the visible actor");
         free(tr);
+    }
+
+    /* ---- mid phase: oriented boxes ---- */
+    {
+        /* A unit cube's 8 corners, so fit_bounds has something to fit. */
+        static const Hx421Vec cube[8] = {
+            {-ONE,-ONE,-ONE},{ ONE,-ONE,-ONE},{ ONE, ONE,-ONE},{-ONE, ONE,-ONE},
+            {-ONE,-ONE, ONE},{ ONE,-ONE, ONE},{ ONE, ONE, ONE},{-ONE, ONE, ONE},
+        };
+        Hx421Mesh cm = { cube, 8, pf, pc, 1, 0, {0,0,0}, {0,0,0} };
+        hx421_mesh_fit_bounds(&cm);
+        ck(cm.half.x == ONE && cm.half.y == ONE && cm.half.z == ONE,
+           "fit_bounds derives the half-extents");
+        ck(cm.centre.x == 0 && cm.centre.y == 0 && cm.centre.z == 0,
+           "a symmetric mesh centres on the origin");
+        /* farthest vertex is a corner at sqrt(3) ~= 1.732 */
+        ck(cm.radius > 113000 && cm.radius < 114100, "fit_bounds derives the sphere radius");
+
+        /* an off-origin mesh must not get a fat sphere */
+        static const Hx421Vec off[2] = {{ 10*ONE, 0, 0 }, { 12*ONE, 0, 0 }};
+        Hx421Mesh om = { off, 2, pf, pc, 1, 0, {0,0,0}, {0,0,0} };
+        hx421_mesh_fit_bounds(&om);
+        ck(om.centre.x == 11*ONE, "off-origin mesh centres on its own bounds");
+        ck(om.radius <= ONE + 64, "sphere is about the centre, not the origin");
+
+        /* --- the SAT itself --- */
+        Hx421Mat I = {{ 32768,0,0, 0,32768,0, 0,0,32768 }};
+        Hx421Vec h = { ONE, ONE, ONE }, n; int32_t dep;
+
+        ck(hx421_obb_test(V(0,0,0), I, h, V(5,0,0), I, h, &n, &dep) == 0,
+           "separated boxes do not overlap");
+        ck(hx421_obb_test(V(0,0,0), I, h, V(1,0,0), I, h, &n, &dep) == 1,
+           "overlapping boxes overlap");
+        ck_near(dep, ONE, 256, "penetration depth on the shallow axis");
+        ck_near(n.x, ONE, 512, "normal is the separating axis, a toward b");
+        ck(hx421_obb_test(V(0,0,0), I, h, V(0,0,3), I, h, &n, &dep) == 0,
+           "separation on z is found too");
+
+        /* the normal must reverse with the argument order */
+        hx421_obb_test(V(1,0,0), I, h, V(0,0,0), I, h, &n, &dep);
+        ck_near(n.x, -ONE, 512, "normal reverses when the pair is swapped");
+
+        /* THE case axis-aligned boxes get wrong: two unit cubes 2.4 apart on a
+         * diagonal. An AABB grown to enclose a 45-degree-rotated cube reaches
+         * sqrt(2) ~= 1.41 per side and would report a hit; the oriented boxes
+         * do not touch. This is why the mid phase is OBB and not AABB. */
+        Hx421Scene *t = calloc(1, sizeof *t);
+        hx421_scene_init(t);
+        int cid = hx421_mesh_register(t, &cm);
+        int o1 = hx421_object_spawn(t, cid);
+        int o2 = hx421_object_spawn(t, cid);
+        Hx421Vec far45 = { 2400 * (ONE/1000), 2400 * (ONE/1000), 0 };
+        hx421_object_set_pos(t, o1, V(0,0,0));
+        hx421_object_set_pos(t, o2, far45);
+        hx421_object_set_rot(t, o2, 128, 0, 0);        /* 45 degrees of yaw */
+
+        Hx421ContactList *tl = calloc(1, sizeof *tl);
+        int bp = hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+        ck(bp == 1, "spheres (radius sqrt3 each) say maybe at 3.39 apart");
+        ck(hx421_midphase(t, tl) == 0, "oriented boxes say no — the sphere was optimistic");
+
+        /* and when they really do overlap, the mid phase keeps them and
+         * replaces the sphere normal with the box normal */
+        hx421_object_set_pos(t, o2, V(1,0,0));
+        hx421_object_set_rot(t, o2, 0, 0, 0);
+        hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+        ck(hx421_midphase(t, tl) == 1, "genuinely overlapping boxes survive");
+        ck_near(tl->c[0].normal.x, ONE, 512, "surviving contact carries the box normal");
+        ck_near(tl->c[0].depth, ONE, 256, "and the box depth");
+
+        /* a rotation that does NOT separate them must still report a hit --
+         * otherwise the test above passes for the wrong reason */
+        hx421_object_set_rot(t, o2, 128, 0, 0);
+        hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+        ck(hx421_midphase(t, tl) == 1, "a 45-degree box at 1.0 apart still overlaps");
+
+        /* mask pairs pass through the mid phase untouched */
+        hx421_scene_init(t);
+        {
+            static uint8_t s16[2 * 16];
+            for (unsigned i = 0; i < sizeof s16; ++i) s16[i] = 0xFF;
+            Hx421Mask am2 = { 16, 16, 2, s16 };
+            int mk2 = hx421_mask_register(t, &am2);
+            int a1 = hx421_actor_spawn(t, mk2), a2 = hx421_actor_spawn(t, mk2);
+            hx421_object_set_pos(t, a1, V(0,0,0));
+            Hx421Vec p2 = { 8*ONE, 8*ONE, 0 };
+            hx421_object_set_pos(t, a2, p2);
+            hx421_broadphase(t, tl, HX421_SCAN_TOPLEFT);
+            ck(tl->count == 1, "actor pair found by the broad phase");
+            ck(hx421_midphase(t, tl) == 1, "mask pairs survive the mid phase untouched");
+            ck(tl->c[0].px == 8 && tl->c[0].py == 8, "and keep their contact point");
+        }
+        free(tl); free(t);
     }
 
     /* ---- the measurement docs/collision.md asks for ---- */

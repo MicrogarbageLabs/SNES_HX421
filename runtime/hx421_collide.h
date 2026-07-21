@@ -78,6 +78,36 @@ typedef struct {
 int hx421_broadphase(const Hx421Scene *s, Hx421ContactList *out,
                      Hx421ScanOrder order);
 
+/* MID PHASE: refine a contact list in place, dropping pairs whose oriented
+ * boxes do not actually overlap and replacing the surviving mesh pairs' sphere
+ * normal with the box separating normal and depth.
+ *
+ * Only MESH pairs are refined — a mask pair's per-pixel result is already exact,
+ * so there is nothing a box could add. Returns the surviving contact count.
+ *
+ * Boxes are ORIENTED (the object's own rotation), not axis-aligned, because
+ * these objects rotate: an axis-aligned box around a tumbling ship grows and
+ * shrinks with its heading, which reads as collision getting mysteriously
+ * sloppy at 45 degrees. */
+int hx421_midphase(const Hx421Scene *s, Hx421ContactList *io);
+
+/* Oriented-box overlap by separating axis. Fills *normal / *depth with a
+ * separating direction and how far to push along it.
+ *
+ * All 15 axes decide the BOOLEAN (3 + 3 face normals and 9 edge cross
+ * products); an edge-edge case can separate boxes that every face axis says
+ * overlap, so skipping the cross products would report phantom hits.
+ *
+ * The returned normal is the shallowest of the SIX FACE axes, which are unit
+ * vectors. Cross-product axes are not unit length, so comparing their raw
+ * overlaps against the face axes' picks the wrong winner unless each is
+ * normalised — nine square roots to shave a little off a push-out distance.
+ * Any axis with its overlap is a valid separation, so this trades minimality
+ * for cost deliberately rather than by accident. */
+int hx421_obb_test(Hx421Vec pa, Hx421Mat ra, Hx421Vec ha,
+                   Hx421Vec pb, Hx421Mat rb, Hx421Vec hb,
+                   Hx421Vec *normal, int32_t *depth);
+
 /* Sphere-vs-sphere for one pair, exposed so a caller can re-test a specific
  * pair without a full sweep (and so the test suite can check the maths
  * directly). Returns 1 on overlap and fills *normal / *depth. */
