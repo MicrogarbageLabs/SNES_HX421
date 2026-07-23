@@ -127,10 +127,26 @@ returns *without reconfiguring*, so `fpga_base` stays loaded and the ROM still r
 A **truncated** file does. `fpga_pgm` streams it, never sees `DONE`, retries ten times and calls
 `led_panic` — a `while(1)`. The cart hangs and the screen stays black.
 
-`build-h1.ps1` emits `fpga_obc1_TRUNCATED.bi3` for exactly this. Copy it over `fpga_obc1.bi3`, load
-the probe, and a **black, hung screen proves the file is genuinely being read and programmed** — and
-therefore that the passing result came from our bitstream. Power-cycle and restore the good file
-afterwards; `led_panic` is only a spin loop and nothing is written to flash.
+`build-h1.ps1` emits `fpga_obc1_TRUNCATED.bi3` for exactly this.
+
+**Run 2026-07-21: the control passes.** With the truncated file in place the cart **hangs on the
+menu's "Loading ..." message**. That is a sharper signature than the black screen predicted, and it
+localises the stall exactly: `load_rom` prints "Loading ...", *then* calls `fpga_pgm`, which streams
+the file, never sees `DONE`, retries ten times and enters `led_panic`. The text stays on screen
+because nothing after it ever runs.
+
+So both directions are now established:
+
+| bitstream at `/sd2snes/fpga_obc1.bi3` | result | conclusion |
+|---|---|---|
+| ours, intact | probe runs, colours cycle | configuration succeeded |
+| ours, truncated | hangs at "Loading ..." | the file is genuinely read and programmed |
+
+Together those rule out a stale `fpga_base` explaining the pass. **H1 is closed: a bitstream built by
+our Quartus flow and packed by our packer configures on real hardware.**
+
+Recovery is a power cycle plus restoring the good file. `led_panic` is a spin loop; nothing is
+written to flash.
 
 ## Settled by the H1 run
 
