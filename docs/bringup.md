@@ -163,11 +163,77 @@ Still open:
   counts) and `led_panic` keeps `cli_entrycheck` alive. Not needed for H1, but it would turn every
   later failure from a black screen into a sentence.
 
+## H3 — the DMA rate (`snes/dma_rate.s`)
+
+Every bandwidth figure in `docs/{raycaster,tbdr,fmv-engine}.md` rests on one constant: bytes moved
+into VRAM per scanline of blanking. This measures it, and separately measures what a transfer
+*costs* to start.
+
+Plain LoROM, carttype `$00` — **no coprocessor, no core swap, nothing on the card to back up.** What
+it measures is a property of the console.
+
+### Two instruments
+
+**Rate**, by counter: force-blank the whole frame, read V, run a DMA of known size, read V again.
+The CPU is halted for the duration of a DMA so it cannot count lines itself; reading the counter
+either side is exact.
+
+**Fit**, by binary search: with the display running at brightness 0 (**not** forced blank, which
+would grant VRAM access all frame and destroy the very window being measured), trigger at the top of
+vblank and ask whether the transfer was still inside vblank when it ended. Walk the size to the
+largest that fits.
+
+> A ROM→WRAM copy cannot be used for this. A GP-DMA always runs to completion and halts the CPU — it
+> is not truncated when the window closes — and WRAM accepts writes at any time, so a verify would
+> pass at every size and the walk would climb to its ceiling. **VRAM is the only target where "did it
+> land" means "did it fit"**, because writes outside blanking are dropped.
+
+### Measured (bsnes-plus, pending hardware)
+
+```
+bytes    V start   V end   lines   B/line
+ 8192      0        50      50      163
+16384      0        99      99      165
+32768      0       198     198      165
+```
+
+The rate converges on **165.5 B/line**, exactly theory: (1364 master cycles − 40 for DRAM refresh) / 8.
+The 163 at 8 KB is not lower efficiency — 8192/165.5 = 49.5 lines, which can only be reported as 50.
+Line quantisation, not overhead.
+
+```
+bytes that fit in one vblank      vs one DMA
+one DMA                6064          —
+eight chained          6048        -16   (one search step: free)
+eight triggers         5872       -192   (~27 B per extra trigger)
+```
+
+### The engine result: chain, do not re-trigger
+
+**Eight channels fired by a single `$420B` write move the same bytes as one large DMA.** They all
+target `$2118` and VMADD keeps incrementing across them, so a chain writes one contiguous VRAM run
+for one trigger. Chaining is free.
+
+A separate trigger costs **~27 bytes (~0.17 scanlines)** — and that is the floor, measuring only the
+trigger itself with the channels pre-armed. The engine's emitted body additionally rewrites VMADD and
+the source registers per slot, so its real per-slot cost is higher.
+
+So: **contiguous VRAM regions should use up to 8 chained channels per trigger.** Only scattered
+destinations need CPU between transfers to move VMADD, and only those pay the per-slot cost. At a
+dozen-plus slots per frame the trigger cost alone is ~6% of the window.
+
+Also worth correcting: the docs' ~6.2 KB vblank budget is optimistic. Measured is **6064 B** at
+224-line mode.
+
 ## After H1
 
 - **H2** — a core that does something observable: hold a known value at a cart address the 65816 can
   read, proving our logic runs and the bus decode works.
-- **H3** — re-measure the force-blank DMA budget on silicon against the bsnes figure of ~163 B/line
-  (`snes/dma_rate_test.s`). Every bandwidth number in `docs/raycaster.md`, `docs/tbdr.md` and
-  `docs/fmv-engine.md` rests on that constant, and it is the one most likely to differ on hardware.
 - **H4** — the audio path: `fpga/cores/mixer_out` against the C mixer reference in `engine/`.
+
+## Gotcha: mgapi.dll hijacks any ROM in bsnes-plus
+
+`mgapi.dll` takes over the whole HiROM cart region **purely by existing next to `bsnes.exe`** —
+`cartridge.cpp` calls `mgapi.try_load()` with no opt-out environment variable, unlike `HX421_ENABLE`.
+Loading a plain test ROM shows the microgarbage boot banner instead. To test an ordinary ROM, rename
+`mgapi.dll` (and `hx421.dll`) out of the way first, and remember to put them back.
