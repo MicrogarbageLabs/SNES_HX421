@@ -81,12 +81,36 @@ if (-not (Test-Path $gcc) -and -not (Get-Command gcc -ErrorAction SilentlyContin
 & $gcc -O2 -std=c99 -o $packer (Join-Path $repo "tools\hx421_rlepack.c")
 & $packer $rbf (Join-Path $out "fpga_obc1.bi3")
 
+# ---- 4. the negative control --------------------------------------------
+# "The ROM runs" does NOT prove OUR bitstream is loaded: if the file were
+# being ignored, the FPGA would still hold fpga_base from power-on, which
+# maps LoROM perfectly well and would run the probe identically.
+#
+# A MISSING file does not distinguish either: fpga_pgm returns early
+# without reconfiguring, so fpga_base stays and the ROM still runs.
+#
+# A TRUNCATED file does. fpga_pgm streams it, never sees DONE, retries ten
+# times and calls led_panic, which is a while(1). The cart hangs and the
+# screen stays black. So a black screen with this file is PROOF that the
+# file is being read and programmed, and therefore that the working result
+# came from our bitstream rather than a stale fpga_base.
+$good = Join-Path $out "fpga_obc1.bi3"
+$bad  = Join-Path $out "fpga_obc1_TRUNCATED.bi3"
+$gb = [System.IO.File]::ReadAllBytes($good)
+$half = [int]($gb.Length / 2)
+[System.IO.File]::WriteAllBytes($bad, $gb[0..($half - 1)])
+Step ("wrote fpga_obc1_TRUNCATED.bi3 ({0} B) - negative control, expect a HANG" -f $half)
+
 Write-Host ""
 Write-Host "Ready. On the SD card:" -ForegroundColor Green
 Write-Host "  1. BACK UP  /sd2snes/fpga_obc1.bi3  off the card"
 Write-Host "  2. copy     snes\build\fpga_obc1.bi3  ->  /sd2snes/"
 Write-Host "  3. copy     snes\build\h1_probe.sfc   ->  anywhere browsable"
-Write-Host "  4. load h1_probe.sfc and WATCH THE LEDS (see docs\bringup.md)"
+Write-Host "  4. load h1_probe.sfc and WATCH THE SCREEN"
 Write-Host ""
-Write-Host "  no blink pattern = the FPGA accepted our bitstream (H1 PASS)"
-Write-Host "  fast blink       = panic; the lit LED says which stage failed"
+Write-Host "  cycling colour = the 65816 is running our code (H1 PASS)"
+Write-Host "  solid red      = init ran, main loop stuck"
+Write-Host "  black          = the ROM never executed"
+Write-Host ""
+Write-Host "  The FXPak Pro is a sealed cart: its status LEDs are inside the"
+Write-Host "  shell, so the screen is the only diagnostic. See docs\bringup.md."

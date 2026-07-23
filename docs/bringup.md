@@ -49,20 +49,43 @@ trailing byte** (an EOF off-by-one in `getrunlength`); harmless in practice, sin
 are ignored, but it means ours is the more faithful of the two and a byte-identical comparison
 against upstream is the wrong check.
 
-## What failure looks like
+## The LEDs are NOT observable — the screen is the diagnostic
 
-`fpga_pgm` panics into a 5 Hz blink of the three LEDs, the pattern encoding the stage that failed
-(`src/stm32f4xx/led.c`, bit 2 = ready, bit 1 = read, bit 0 = write):
+`fpga_pgm` panics into a blink pattern on three LEDs, and the first version of this plan was built
+around reading it. **That was useless in practice: the FXPak Pro is a sealed cartridge and those LEDs
+are on the PCB inside the shell.** The blink codes are recorded below only because they are visible
+on a bare sd2snes board or with a shell open.
 
-| code | LEDs | meaning |
+| code | LEDs (bit2=ready, bit1=read, bit0=write) | meaning |
 |---|---|---|
-| 1 | write | `PROG_B` stuck high — wiring/board, not our bitstream |
-| 2 | read | no `INIT_B` response — FPGA not entering configuration |
+| 1 | write | `PROG_B` stuck high — board, not our bitstream |
+| 2 | read | no `INIT_B` response |
 | 3 | read+write | `DONE` stuck high |
-| 4 | ready | **failed to configure after 10 tries — our bitstream is wrong** |
+| 4 | ready | failed to configure after 10 tries — bitstream rejected |
 
-**No blink pattern means the FPGA accepted our bitstream.** That is the milestone, and it is
-observable without a UART.
+So the probe ROM has to carry the signal itself, and `snes/h1_probe.s` produces three states that can
+be told apart by eye:
+
+| screen | meaning |
+|---|---|
+| **black** | the ROM never executed |
+| **solid red** | reset and PPU init ran; the main loop is stuck |
+| **cycling colour** | the 65816 is executing our loop continuously |
+
+The colour is set during the initial forced blank, so "got here" and "still running" are separate
+observations. A static screen cannot be distinguished from a frozen CPU, which is why the loop
+animates.
+
+### Measured: mid-frame CGRAM writes are NOT dropped
+
+I predicted that writing CGRAM during active display would be discarded on silicon and leave a black
+screen. **Wrong.** The first build of the probe wrote CGRAM in a tight unsynced loop and on hardware
+produced drifting horizontal colour bands: the write takes effect at the raster position it lands
+on, and the loop period beats against the frame so the band walks up the screen.
+
+That artifact is *positive* evidence — an unsynced writer paints bands, so seeing them means the CPU
+is looping. The probe now syncs to v-blank for a clean whole-screen colour, which is easier to read,
+but either behaviour is a pass.
 
 ## Milestone H1 — "the device accepts our build"
 
@@ -79,21 +102,50 @@ Everything downstream depends on that and nothing else can be trusted until it i
 3. Build a ROM with `map = 0x30`, `carttype = 0x25` in its header.
 4. Load it. Watch the LEDs.
 
-Result: no panic blink = configured. Panic code 4 = our bitstream is rejected. Any other code points
-at the board or the load sequence rather than at us.
+### Result: PASS (2026-07-21, FXPak Pro)
 
-## Unknowns to settle before touching hardware
+`h1_probe.sfc` ran, cycling colours with the drifting band described above.
 
-These are questions about the specific device, not the design, and guessing at them is how a
-low-risk experiment becomes a bricked cart:
+That is better than predicted. The chain it exercises is: MCU reads the ROM header, matches
+map/carttype to the OBC1 core, streams `/sd2snes/fpga_obc1.bi3` into the FPGA, waits for `DONE`,
+loads the ROM, releases the SNES — and the 65816 then fetches and executes from cart space. If
+`fpga_pgm` had failed it would have hit `led_panic`, a `while(1)`, and the ROM would never have
+loaded at all. **So the ROM running is itself proof the bitstream configured.**
 
-- **Which firmware fork.** This tree vendors `mrehkopf/sd2snes`. The FXPak Pro ships a different
-  distribution; filenames, the `.bi3` extension and the core-selection logic may all differ. Confirm
-  by listing `/sd2snes/` on the actual SD card.
-- **Whether the mk3 STM32 config matches.** `config-mk3-stm32` says STM32F401 + `.bi3`. A board
-  running the LPC1756 (`config-mk3`) uses the same extension but different firmware entirely.
-- **Whether a UART is reachable.** `fpga_pgm` `printf`s a running commentary (`P`, `p`, `C`, `c`,
-  byte counts). If the debug UART is accessible, H1 becomes far more diagnostic than LED blinks.
+It also settles a question the plan had left open: **`baseline_mini` maps a ROM.** I expected the
+minimal base might not, and had written a black screen down as an acceptable pass. It does.
+
+### The remaining confound: is it OUR bitstream?
+
+"The ROM runs" does not by itself prove our file is what got programmed. If the swap had somehow not
+taken effect, the FPGA would still hold `fpga_base` from power-on — which maps LoROM perfectly well
+and would run the probe identically.
+
+A **missing** file does not distinguish the cases either: `fpga_pgm` opens the file, fails, and
+returns *without reconfiguring*, so `fpga_base` stays loaded and the ROM still runs.
+
+A **truncated** file does. `fpga_pgm` streams it, never sees `DONE`, retries ten times and calls
+`led_panic` — a `while(1)`. The cart hangs and the screen stays black.
+
+`build-h1.ps1` emits `fpga_obc1_TRUNCATED.bi3` for exactly this. Copy it over `fpga_obc1.bi3`, load
+the probe, and a **black, hung screen proves the file is genuinely being read and programmed** — and
+therefore that the passing result came from our bitstream. Power-cycle and restore the good file
+afterwards; `led_panic` is only a spin loop and nothing is written to flash.
+
+## Settled by the H1 run
+
+- **The firmware fork is compatible.** The FXPak Pro accepted a `.bi3` at `/sd2snes/fpga_obc1.bi3`
+  and selected it from a `map=$30 carttype=$25` header, so the vendored `mrehkopf/sd2snes` logic in
+  `smc.c` matches the shipping firmware closely enough for core substitution.
+- **Our RLE packer produces a bitstream the MCU accepts.** Round-trip verification in software
+  predicted this; hardware confirmed it.
+- **`baseline_mini` maps a ROM well enough to execute.**
+
+Still open:
+
+- **Whether a UART is reachable.** `fpga_pgm` prints a running commentary (`P`, `p`, `C`, `c`, byte
+  counts) and `led_panic` keeps `cli_entrycheck` alive. Not needed for H1, but it would turn every
+  later failure from a black screen into a sentence.
 
 ## After H1
 
