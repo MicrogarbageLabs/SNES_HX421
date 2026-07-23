@@ -34,7 +34,9 @@ at 1 px/cycle, 40 MHz            = 3.6 ms   -> ~11% of a 33 ms frame
 The wall is getting finished tiles into VRAM:
 
 ```
-vblank DMA budget        ~6.2 KB per 60 Hz frame
+vblank DMA budget        6064 B per 60 Hz frame  (MEASURED, hardware + bsnes agree)
+                         163.9 B/line effective; raw rate 165.5, the rest is trigger latency
+                         a letterboxed window is (262 - visible) x 163.9
 full screen, all unique  750 x 32 B = 24 KB  -> 4 vblanks -> 15 fps
 ```
 
@@ -101,7 +103,7 @@ the technique already explored for FMV. Filed as the endpoint, not the starting 
 
 ```
 rasteriser  64 px x ~3 overdraw = ~192 cycles/tile @40 MHz = 4.8 us -> ~208 tiles/ms
-DMA drain   6.2 KB per vblank / 32 B                                -> ~11.6 tiles/ms
+DMA drain   6064 B per vblank / 32 B                                -> ~11.4 tiles/ms
 ```
 
 A single core is already **~18x faster than the DMA can drain it**. A second would idle. Replicating
@@ -117,6 +119,21 @@ What to build instead:
 - **Spend multipliers on triangle SETUP** — edge equations and gradients — where the 56 idle 18x18
   blocks pay without consuming LEs. Binning is cheap (~1000 triangles x ~6 tiles ≈ 0.5 ms) and does
   not need replication either.
+
+## Chain DMA channels; do not re-trigger
+
+Measured on hardware (`docs/bringup.md`): **eight channels fired by a single `$420B` write move the
+same bytes as one large DMA** — they all target `$2118` and VMADD keeps incrementing across them, so
+a chain writes one contiguous VRAM run for one trigger. Chaining is free.
+
+A separate trigger costs **~27 bytes (~0.17 lines)**, and that is the floor, measured with the
+channels pre-armed; the emitted body additionally rewrites VMADD and the source registers per slot.
+At a dozen-plus slots per frame the trigger cost alone is ~6% of the window.
+
+So a CHR burst covering a contiguous slot range should be emitted as up to 8 chained channels rather
+than 8 triggers. Only scattered destinations need the CPU between transfers to move VMADD, and only
+those pay. The dynamic CHR pool allocates slots in order, so a burst's tiles ARE contiguous — this
+applies directly.
 
 ## Build order
 

@@ -9,7 +9,9 @@
  *  The classify step is not an optimisation, it is the mechanism: a tile whose
  *  64 pixels share one index needs NO CHR upload at all, only a tilemap entry
  *  pointing at a resident solid tile. CHR-to-VRAM DMA is the binding constraint
- *  (750 unique tiles = 24 KB against a ~6.2 KB vblank), so the solid fraction
+ *  (750 unique tiles = 24 KB against a 6064 B vblank, MEASURED on hardware —
+ *  see docs/bringup.md; the ~6.2 KB once written here was ~5% optimistic), so
+ *  the solid fraction
  *  of a scene sets the frame rate. See docs/tbdr.md.
  *
  *  Dependency-free and integer-only so the fabric block can be diffed against

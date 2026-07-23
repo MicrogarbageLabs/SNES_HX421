@@ -188,7 +188,15 @@ largest that fits.
 > pass at every size and the walk would climb to its ceiling. **VRAM is the only target where "did it
 > land" means "did it fit"**, because writes outside blanking are dropped.
 
-### Measured (bsnes-plus, pending hardware)
+### Measured — and hardware agrees with bsnes-plus TO THE BYTE
+
+The FXPak Pro returned **6064 / 6048 / 5872**, identical to bsnes-plus across all three structures.
+Exact agreement on three independent figures is not coincidence: for GP-DMA into VRAM and for the
+size of the vblank window, **bsnes-plus is trustworthy and DMA-budget work can be iterated in the
+emulator**. That is a methodology result worth more than the constants.
+
+It does not generalise to everything. This session already found one place bsnes and silicon differ
+in kind — mid-frame CGRAM writes — so the claim is specifically about GP-DMA timing.
 
 ```
 bytes    V start   V end   lines   B/line
@@ -222,8 +230,17 @@ So: **contiguous VRAM regions should use up to 8 chained channels per trigger.**
 destinations need CPU between transfers to move VMADD, and only those pay the per-slot cost. At a
 dozen-plus slots per frame the trigger cost alone is ~6% of the window.
 
-Also worth correcting: the docs' ~6.2 KB vblank budget is optimistic. Measured is **6064 B** at
-224-line mode.
+### What this does and does not change in the budgets
+
+The **~163 B/line** the other docs use is right, and is the number to keep. 6064 bytes over a 37-line
+vblank is 163.9 B/line *effective* — the raw rate is 165.5, and the difference is the trigger
+latency, which real transfers always pay. Budgeting on 163 is correct and marginally conservative.
+
+The **~6.2 KB vblank figure is optimistic** and should read **6064 B (5.9 KB)**. 6.2 KB is 6349,
+about 5% over, which is enough to turn a frame that "just fits" on paper into one that overruns.
+
+The raycaster's 54-line window at 240x208 gives 54 x 163.9 = **~8850 B**, against the 8802 B the doc
+claims. Unchanged in substance.
 
 ## After H1
 
