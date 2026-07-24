@@ -74,12 +74,14 @@ module hx_mixer_seq #(
     reg  [31:0] loop_len[0:N-1];
     reg  signed [15:0] vol [0:N-1], pan_l [0:N-1], pan_r [0:N-1];
 
+    // CONFIG registers only. The STATE registers (phase, tap*, src_pos) are
+    // owned by the sequencer block below — writing them here too would be a
+    // multiple-driver net (illegal for synthesis; iverilog silently allowed it).
     integer j;
     always @(posedge clk) begin
         if (rst) begin
             for (j=0;j<N;j=j+1) begin
-                phase[j]<=0; tap0[j]<=0; tap1[j]<=0; tap2[j]<=0; tap3[j]<=0;
-                src_pos[j]<=0; step[j]<=0; cubic[j]<=0; active[j]<=0; muted[j]<=0;
+                step[j]<=0; cubic[j]<=0; active[j]<=0; muted[j]<=0;
                 loopf[j]<=0; loop_len[j]<=32'd1; vol[j]<=Q15_ONE; pan_l[j]<=Q15_ONE; pan_r[j]<=Q15_ONE;
             end
         end else if (cfg_we) begin
@@ -147,6 +149,9 @@ module hx_mixer_seq #(
         rd_req    <= 1'b0;
         if (rst) begin
             state <= S_IDLE; ci <= 0; acc_l <= 0; acc_r <= 0; k <= 0;
+            for (j=0;j<N;j=j+1) begin
+                phase[j]<=0; tap0[j]<=0; tap1[j]<=0; tap2[j]<=0; tap3[j]<=0; src_pos[j]<=0;
+            end
         end else begin
             case (state)
                 S_IDLE: begin

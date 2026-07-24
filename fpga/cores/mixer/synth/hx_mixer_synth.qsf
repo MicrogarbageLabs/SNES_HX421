@@ -1,0 +1,20 @@
+# Standalone synthesis of the FPGA mixer, to measure resource cost + Fmax on the
+# real device (EP4CE15F17C8, same part as the FXPak base core). Not a bitstream
+# to run -- a fit/timing check answering "does the 8-channel mixer fit alongside
+# base, and does it hold the 96 MHz memory clock?"
+
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE15F17C8
+set_global_assignment -name TOP_LEVEL_ENTITY hx_mixer_seq
+set_global_assignment -name VERILOG_FILE ../hx_cubic.v
+set_global_assignment -name VERILOG_FILE ../hx_lerp.v
+set_global_assignment -name VERILOG_FILE ../hx_scale.v
+set_global_assignment -name VERILOG_FILE ../hx_finalize.v
+set_global_assignment -name VERILOG_FILE ../hx_mixer_seq.v
+set_global_assignment -name SDC_FILE hx_mixer_synth.sdc
+
+# Let the fitter place I/O on virtual pins so a submodule with wide ports fits
+# the package without hand-assigning 200+ pins.
+set_instance_assignment -name VIRTUAL_PIN ON -to "*"
+
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"

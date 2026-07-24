@@ -67,3 +67,17 @@ fpga/cores/mixer/sim/work_sim/
 cubic_vectors.txt
 chan_vectors.txt
 mix_vectors.txt
+
+# mixer standalone-synth outputs (keep project, drop generated)
+fpga/cores/mixer/synth/db/
+fpga/cores/mixer/synth/incremental_db/
+fpga/cores/mixer/synth/output_files/
+fpga/cores/mixer/synth/*.rpt
+fpga/cores/mixer/synth/*.summary
+fpga/cores/mixer/synth/*.jdi
+fpga/cores/mixer/synth/*.pin
+fpga/cores/mixer/synth/*.qws
+fpga/cores/mixer/synth/*.sof
+fpga/cores/mixer/synth/*.done
+fpga/cores/mixer/synth/*.smsg
+synth/*.sld

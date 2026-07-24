@@ -121,6 +121,30 @@ So the mixer holds its 22.7 us deadline with ~95% of the PSRAM port left for the
 tilemap — the bandwidth analysis, now confirmed from the mixer side. This is why the arbiter only
 needs to give the mixer a small guaranteed slice at top priority; there is no contention pressure.
 
+### Synthesis check (2026-07-24) — fits, but the datapath needs pipelining
+
+Synthesized `hx_mixer_seq` standalone for the EP4CE15 (`synth/`, virtual pins, 96 MHz constraint).
+Two results, one of them the kind only synthesis finds:
+
+- **Fits comfortably.** 4245 LE (28%), 22 nine-bit multipliers (20%), 2416 registers (16%), 0 M9K.
+  Alongside the `base` core's 6359 LE that is ~69% of the device — room to spare.
+- **Timing FAILS at 96 MHz.** Setup slack −38.9 ns against the 10.4 ns period; Fmax ≈ 20 MHz. The
+  whole produce path is one combinational cloud in a single cycle: 8:1 tap-array muxes -> the cubic's
+  chained multiplies (t -> t² -> t³ -> products -> sum) -> volume -> pan -> accumulate. Sim could
+  never see this; the co-sim is functional, not timed.
+
+The fix is essentially free: the mixer uses only 112 of 2177 cycles/frame, so the datapath can be
+**pipelined across several cycles** and still finish with vast margin. Plan: register the tap-array
+read, pipeline the cubic into one-multiply-deep stages (t²; t³ + coeffs; the three products; sum +
+halve + saturate), register the volume and pan multiplies, then accumulate. ~6 extra cycles/channel
+is ~48 more cycles/frame — trivial against 2177. The output values are unchanged (pipelining is
+timing only), so the same co-sim re-verifies it.
+
+A real synthesis-only bug was also caught here: `phase`/`tap`/`src_pos` were reset in the config
+always-block and written in the sequencer block — a multiple-driver net, illegal for synthesis,
+which iverilog had silently allowed. Fixed by giving the sequencer sole ownership of the state
+registers.
+
 ### Step 6b — the DAC seam (needs the board)
 
 What remains and genuinely needs hardware: wire the request/ack read port to the real PSRAM arbiter,
