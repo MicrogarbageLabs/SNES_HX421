@@ -116,6 +116,22 @@ else {
     }
 }
 
+# 6. free-running audio subsystem: tick -> render -> sample, no underrun.
+Step "free-running audio subsystem (tick-driven, underrun check)"
+& iverilog -g2012 -o tb_audio_top.vvp `
+    (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
+    (Join-Path $mixer "hx_scale.v") (Join-Path $mixer "hx_finalize.v") `
+    (Join-Path $mixer "hx_produce.v") (Join-Path $mixer "hx_mixer_seq.v") `
+    (Join-Path $mixer "hx_audio_top.v") (Join-Path $here "tb_audio_top.v")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "hx_audio_top compile FAILED" -ForegroundColor Red }
+else {
+    & vvp tb_audio_top.vvp | Where-Object { $_ -match "co-sim|^RESULT|^MISMATCH" } | ForEach-Object {
+        if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+        elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^MISMATCH") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+        else { Write-Host $_ }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

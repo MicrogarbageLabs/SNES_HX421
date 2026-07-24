@@ -168,9 +168,23 @@ The full arc: **−38.9 ns -> +0.291 ns**, unsynthesizable-at-speed to meeting t
 the output never once diverging from the golden C. The synthesizable, timing-closed 8-channel mixer
 is done; only the board seam (step 6b) remains.
 
+### Free-running audio subsystem (2026-07-24) — done in sim
+
+`hx_audio_top.v`: the integration wrapper. A sample tick (master/TICK_DIV ≈ 44.1 kHz) fires one mixer
+render; the finalized frame is latched as the next DAC sample (`audio_l/r` + `audio_stb`); the read
+port passes through to the PSRAM arbiter. Its reason to exist is the guarantee that the mixer always
+finishes before the next tick, so no sample is missed — `underrun` latches sticky if a tick arrives
+while the mixer is busy, and on a miss the tick is still consumed and the last sample held (a click,
+never drift).
+
+Co-simulated with the golden scene at **TICK_DIV = 512** — far tighter than the real ~2177 — over 300
+samples: bit-exact stream, **underrun = 0**. Synthesized as top: **setup slack +0.409 ns at 96 MHz**,
+28% LE. So the whole audio subsystem holds timing and never misses a deadline with vast margin.
+
 ### Step 6b — the DAC seam (needs the board)
 
-What remains and genuinely needs hardware: wire the request/ack read port to the real PSRAM arbiter,
-and the finalized stereo stream into `dac.v` (the proven MSU-1 I2S serializer). That is the H4
-hardware bring-up — and by construction a mixer arithmetic/control bug is already ruled out, so only
-the fetch wiring and the audio output path are new variables.
+What remains and genuinely needs hardware: instantiate `hx_audio_top` in the `base` fork, wire its
+read port to the real PSRAM arbiter (mixer at top priority), and `audio_l/r` + `audio_stb` into
+`dac.v` (the proven MSU-1 I2S serializer). That is the H4 hardware bring-up — and by construction a
+mixer arithmetic, control, or timing bug is already ruled out, so only the arbiter wiring and the
+DAC/analog path are new variables.

@@ -5,13 +5,14 @@
 
 set_global_assignment -name FAMILY "Cyclone IV E"
 set_global_assignment -name DEVICE EP4CE15F17C8
-set_global_assignment -name TOP_LEVEL_ENTITY hx_mixer_seq
+set_global_assignment -name TOP_LEVEL_ENTITY hx_audio_top
 set_global_assignment -name VERILOG_FILE ../hx_cubic.v
 set_global_assignment -name VERILOG_FILE ../hx_lerp.v
 set_global_assignment -name VERILOG_FILE ../hx_scale.v
 set_global_assignment -name VERILOG_FILE ../hx_finalize.v
 set_global_assignment -name VERILOG_FILE ../hx_produce.v
 set_global_assignment -name VERILOG_FILE ../hx_mixer_seq.v
+set_global_assignment -name VERILOG_FILE ../hx_audio_top.v
 set_global_assignment -name SDC_FILE hx_mixer_synth.sdc
 
 # Let the fitter place I/O on virtual pins so a submodule with wide ports fits
