@@ -181,10 +181,31 @@ Co-simulated with the golden scene at **TICK_DIV = 512** — far tighter than th
 samples: bit-exact stream, **underrun = 0**. Synthesized as top: **setup slack +0.409 ns at 96 MHz**,
 28% LE. So the whole audio subsystem holds timing and never misses a deadline with vast margin.
 
+### PSRAM arbiter + contention (2026-07-24) — done in sim
+
+`hx_psram_arb.v`: two requestors share one PSRAM read port, the MIXER highest priority (hard
+deadline) over a bursty RENDERER (which also stands in for tilemap/MCU traffic). One transaction at a
+time, no mid-transaction preempt, so the mixer waits at most one in-flight renderer read before being
+served — bounded latency, and it cannot starve the renderer since the mixer uses ~5% of the port.
+
+Verified adversarially: `tb_arb` runs the full audio subsystem through the arbiter while a renderer
+requests **every single cycle** (saturated bus). Result — bit-exact stream, **underrun = 0**, worst
+mixer read latency **21 cycles** under saturation (the latency-tolerant mixer absorbs it; proven
+correct at any latency). So the arbitration design holds the mixer's deadline even under worst-case
+contention.
+
+This exposed and fixed a real handshake bug: the mixer pulsed `rd_req` for one cycle, which a reader
+not listening every cycle (an arbiter busy with another port) would miss — deadlock. `rd_req` is now
+**combinational**: held through `S_WAIT` but dropped the same cycle `rd_ack` arrives, so it is never
+missed and never re-triggers on the ack cycle. The always-listening testbench models had hidden it;
+the contention test surfaced it. Still bit-exact everywhere, timing still met (+0.675 ns).
+
 ### Step 6b — the DAC seam (needs the board)
 
-What remains and genuinely needs hardware: instantiate `hx_audio_top` in the `base` fork, wire its
-read port to the real PSRAM arbiter (mixer at top priority), and `audio_l/r` + `audio_stb` into
-`dac.v` (the proven MSU-1 I2S serializer). That is the H4 hardware bring-up — and by construction a
-mixer arithmetic, control, or timing bug is already ruled out, so only the arbiter wiring and the
-DAC/analog path are new variables.
+The entire audio subsystem — mixer, free-running driver, and PSRAM arbiter under saturation — is now
+proven in simulation. What remains and genuinely needs hardware: instantiate `hx_audio_top` + the
+arbiter in the `base` fork, wire the real PSRAM port to the arbiter's memory side and the renderer's
+reads to its second port, and `audio_l/r` + `audio_stb` into `dac.v` (the proven MSU-1 I2S
+serializer). That is the H4 hardware bring-up — and by construction a mixer arithmetic, control,
+timing, OR arbitration bug is already ruled out, so only the physical PSRAM/DAC wiring is a new
+variable.

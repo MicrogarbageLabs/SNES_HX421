@@ -132,6 +132,22 @@ else {
     }
 }
 
+# 7. mixer under adversarial PSRAM contention (renderer hammering the bus).
+Step "mixer under full PSRAM contention (arbiter, underrun check)"
+& iverilog -g2012 -o tb_arb.vvp `
+    (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
+    (Join-Path $mixer "hx_scale.v") (Join-Path $mixer "hx_finalize.v") `
+    (Join-Path $mixer "hx_produce.v") (Join-Path $mixer "hx_mixer_seq.v") `
+    (Join-Path $mixer "hx_audio_top.v") (Join-Path $mixer "hx_psram_arb.v") (Join-Path $here "tb_arb.v")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "hx_psram_arb compile FAILED" -ForegroundColor Red }
+else {
+    & vvp tb_arb.vvp | Where-Object { $_ -match "co-sim|^RESULT|^MISMATCH" } | ForEach-Object {
+        if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+        elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^MISMATCH") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+        else { Write-Host $_ }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

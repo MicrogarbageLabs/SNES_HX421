@@ -43,9 +43,9 @@ module hx_mixer_seq #(
     input  wire        start,
     input  wire        render,
 
-    output reg         rd_req,
+    output wire        rd_req,
     output wire [CHW-1:0] rd_ch,
-    output reg  [31:0] rd_addr,
+    output wire [31:0] rd_addr,
     input  wire        rd_ack,
     input  wire signed [15:0] rd_data,
 
@@ -118,6 +118,13 @@ module hx_mixer_seq #(
     wire [23:0] w_nsp = (w_loopf && (w_src_pos + 24'd1 >= w_loop_len))
                         ? (w_src_pos + 24'd1 - w_loop_len) : (w_src_pos + 24'd1);
 
+    // Combinational read request: held throughout S_WAIT but drops the SAME
+    // cycle rd_ack arrives, so a reader that is not always listening (an arbiter
+    // busy with another port) still captures it, and nothing re-triggers on the
+    // ack cycle. A registered one-cycle pulse would be missed or double-served.
+    assign rd_req  = (state == S_WAIT) && !rd_ack;
+    assign rd_addr = {8'd0, w_src_pos};
+
     // pipelined produce (interp -> vol -> pan), fed from working regs
     reg  prod_load;
     wire signed [15:0] pr_samp_l, pr_samp_r;
@@ -142,7 +149,6 @@ module hx_mixer_seq #(
 
     always @(posedge clk) begin
         out_valid <= 1'b0;
-        rd_req    <= 1'b0;
         prod_load <= 1'b0;
         if (rst) begin
             state <= S_IDLE; ci <= 0; acc_l <= 0; acc_r <= 0; k <= 0;
@@ -196,12 +202,9 @@ module hx_mixer_seq #(
                 end
 
                 S_ISSUE: begin
+                    // rd_req/rd_addr are combinational (asserted in S_WAIT).
                     if (k == 0) state <= S_STORE;
-                    else begin
-                        rd_req  <= 1'b1;
-                        rd_addr <= {8'd0, w_src_pos};
-                        state   <= S_WAIT;
-                    end
+                    else        state <= S_WAIT;
                 end
 
                 S_WAIT: begin
