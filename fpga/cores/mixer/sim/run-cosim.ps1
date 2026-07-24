@@ -98,6 +98,24 @@ else {
     }
 }
 
+# 5. latency-tolerant engine: SAME golden scene, but reads answered late by a
+#    modelled PSRAM. Output must be identical at every latency (1/7/12 cycles).
+Step "latency-tolerant render: same scene under modelled PSRAM latency"
+& iverilog -g2012 -o tb_mix_seq.vvp `
+    (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
+    (Join-Path $mixer "hx_scale.v") (Join-Path $mixer "hx_finalize.v") `
+    (Join-Path $mixer "hx_mixer_seq.v") (Join-Path $here "tb_mix_seq.v")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "hx_mixer_seq compile FAILED" -ForegroundColor Red }
+else {
+    foreach ($lat in 1, 7, 12) {
+        & vvp tb_mix_seq.vvp "+LAT=$lat" | Where-Object { $_ -match "co-sim|^RESULT|^MISMATCH" } | ForEach-Object {
+            if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+            elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^MISMATCH") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+            else { Write-Host $_ }
+        }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

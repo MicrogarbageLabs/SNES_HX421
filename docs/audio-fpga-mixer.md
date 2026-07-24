@@ -98,6 +98,32 @@ before any integration. Two paths that turned out NOT to need new RTL or were fo
   buffers several times inside one render. `hx_mixer` exposes four per-tap read addresses so the
   module owns the wrap.
 
-Only **step 6** remains, and it is the only part that needs the board: the four combinational source
-reads become real PSRAM fetches (with the arbitration priority — mixer's hard 22.7 us deadline over
-renderer bursts), and the finalized stereo stream drives `dac.v`. Everything upstream is proven.
+### Step 6a — latency-tolerant read path (DONE in sim, 2026-07-24)
+
+`hx_mixer_seq.v`: the synthesizable evolution. The combinational 4-wide read becomes a **single
+request/ack port** that tolerates real PSRAM latency. The unification that makes it clean: priming
+and advancing are the same "shift one sample into the window from src_pos" operation, each one read —
+so the whole datapath is a stream of single-sample reads through one port, which is exactly what the
+shared PSRAM bus offers.
+
+Co-simulated against the same golden `mixer_render` scene with a PSRAM model answering reads late.
+**Bit-identical at 1, 7, and 12 cycles of latency** — latency changes timing, not values. Measured
+cost per output frame:
+
+```
+read latency (cyc)   cyc/frame   of 2177 available (96 MHz / 44.1 kHz)
+        1                64          2.9%
+        7 (real PSRAM)  112          5.1%
+       12               152          7.0%
+```
+
+So the mixer holds its 22.7 us deadline with ~95% of the PSRAM port left for the renderer and
+tilemap — the bandwidth analysis, now confirmed from the mixer side. This is why the arbiter only
+needs to give the mixer a small guaranteed slice at top priority; there is no contention pressure.
+
+### Step 6b — the DAC seam (needs the board)
+
+What remains and genuinely needs hardware: wire the request/ack read port to the real PSRAM arbiter,
+and the finalized stereo stream into `dac.v` (the proven MSU-1 I2S serializer). That is the H4
+hardware bring-up — and by construction a mixer arithmetic/control bug is already ruled out, so only
+the fetch wiring and the audio output path are new variables.
