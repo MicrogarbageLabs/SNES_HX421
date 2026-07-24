@@ -52,3 +52,11 @@ fpga/build/*/db/
 fpga/build/*/incremental_db/
 fpga/build/*/simulation/
 fpga/build/*/output_files/
+
+# but DO track FPGA HDL source under fpga/build/ (bare build/ above hides it)
+!fpga/build/*/*.v
+!fpga/build/*/*.qsf
+!fpga/build/*/*.sdc
+!fpga/build/*/*.qpf
+!fpga/build/*/*.qip
+!fpga/build/*/*.vh
