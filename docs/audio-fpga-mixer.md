@@ -50,13 +50,19 @@ latent — but it is now a *known* latent, in both C and RTL, not a surprise wai
 
 ## Build order (each step co-simulated before the next)
 
-1. **Cubic interpolator** — `hx_cubic.v`. **DONE**, 50168 vectors bit-exact (2026-07-24). The most
-   arithmetic-heavy stage, done first because it is the most likely to diverge.
-2. **Linear interpolator** — `interp_linear_q15`; trivial after the cubic.
-3. **Volume + pan + finalize** — `q15_sat_mul`, the pan law, `finalize_output` (headroom shift,
-   saturate, output-format offset/clamp). The output arithmetic, also directly co-simulatable.
+1. **Cubic interpolator** — `hx_cubic.v`. **DONE**, bit-exact (2026-07-24). The most arithmetic-heavy
+   stage, done first because it is the most likely to diverge.
+2. **Linear interpolator** — `hx_lerp.v` vs `interp_linear_q15`. **DONE**, bit-exact.
+3. **Volume/pan multiply + finalize** — `hx_scale.v` vs `q15_sat_mul` (volume and pan-gain
+   application), `hx_finalize.v` vs `finalize_output` (headroom shift, q15 saturate, output-format
+   shift/offset/clamp — tested generally over 16s/12u/8u/8s formats). **DONE**, bit-exact. The pan
+   GAINS themselves (`compute_pan_gains`: `Q15_ONE - |pan|`, note `Q15_ONE == 0x7FFF`) are per-channel
+   control logic, not per-sample, so they live on the STM32 side or a trivial combinational block.
 4. **One-channel datapath** — phase accumulator (q32.32 step), tap-window fetch, the three produce
    paths (fast / resample / loop). Co-sim against `produce_channel_sample` + one-channel render.
+
+All four primitives run under `sim/run-cosim.ps1` (Icarus), ~200k vectors total, every one
+bit-exact. The remaining steps compose these; the arithmetic they rest on is now proven.
 5. **8-channel + accumulate** — the full render against `mixer_render` with a multi-channel scene.
 6. **PSRAM sample fetch + the DAC seam** — the first part that needs hardware; everything above is
    proven in simulation first.
