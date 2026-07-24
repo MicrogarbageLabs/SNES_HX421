@@ -148,21 +148,25 @@ shift+offset+clamp). And `phase` was narrowed from a 64-bit q32.32 to a 32-bit f
 64-bit adder off the control path. Every change re-verified bit-exact by the same co-sim — pipelining
 is timing, not values — with the frame cost rising only 112 -> 176 cycles (of 2177).
 
-Result: **setup slack −38.9 ns -> −3.2 ns, Fmax ~20 -> ~74 MHz.** Resources basically unchanged
-(4030 LE / 26%, 22 mult / 20%, 211 M9K bits). It does not yet close the 96 MHz memory clock.
+Pipelining alone took setup slack −38.9 -> −3.2 ns (Fmax ~20 -> ~74 MHz), but not to 96 MHz. The
+remaining gap was a systematic pattern, not one path: every per-channel state update ran
+`ci -> channel mux -> compute -> array demux`, and a few compute chains sat at ~13.5 ns through the mux.
 
-The remaining ~3 ns is a systematic pattern, not a single path: every per-channel state update runs
-`ci -> channel mux -> compute -> array demux`, and a few compute chains (the 32-bit phase add, the
-loop wrap, finalize) sit at ~13.5 ns through the mux. Two ways to close it, both bounded:
+### Load-context restructure (2026-07-24) — MEETS 96 MHz
 
-- **Load-context restructure (preferred, single clock domain):** a cycle that latches the current
-  channel's state into flat working registers, compute on those, store back — isolating the channel
-  mux to the load cycle and the demux to the store cycle, so no compute path crosses a mux. This is
-  the definitive fix and hits 96 MHz.
-- **Divided mixer clock:** run the mixer at ~48 MHz (memory/2) and cross the already-async
-  request/ack read port into the 96 MHz PSRAM domain with 2-FF synchronizers. 74 MHz clears 48 MHz
-  with room; the mixer has 20x cycle headroom so half-rate is fine. Costs a small CDC but no
-  datapath rework.
+The definitive fix, and it closes timing. Each channel is processed through flat WORKING registers:
+`S_LOAD` latches `arrays[cur]` into `w_*` (the ONLY channel mux, a mux->reg), all arithmetic reads
+and writes `w_*` (no mux anywhere in a compute path), `S_STORE` writes `w_*` back to `arrays[cur]`
+(the ONLY demux, a reg->demux). Every compute chain is then reg->reg. The finalize was also split to
+three stages (headroom+saturate; out_shift+offset; clamp) to clear the last 0.5 ns.
+
+**Setup slack +0.291 ns (85 C) / +1.147 ns (0 C) — MET.** Still bit-exact across every co-sim and all
+read latencies. Resources 4197 LE (27%), 22 mult (20%), 2904 registers (19%), 211 M9K bits. Frame cost
+185 cycles of 2177 at the realistic 7-cycle read latency (+9 from the load/store cycles — nothing).
+
+The full arc: **−38.9 ns -> +0.291 ns**, unsynthesizable-at-speed to meeting the memory clock, with
+the output never once diverging from the golden C. The synthesizable, timing-closed 8-channel mixer
+is done; only the board seam (step 6b) remains.
 
 ### Step 6b — the DAC seam (needs the board)
 
