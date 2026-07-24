@@ -74,6 +74,30 @@ else {
     }
 }
 
+# 4. full 8-channel render: golden scene from the real mixer, compared to the
+#    time-multiplexed engine (pulls in every mixer submodule).
+Step "8-channel render: golden scene from the real mixer"
+& gcc -O2 -std=c99 -I"$engine" -o genmix.exe `
+    (Join-Path $here "gen_mix_vectors.c") `
+    (Join-Path $engine "audio\audio_mixer.c") `
+    (Join-Path $engine "containers\ring_buffer.c")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "gen_mix build FAILED" -ForegroundColor Red }
+else {
+    & .\genmix.exe mix_vectors.txt
+    & iverilog -g2012 -o tb_mix.vvp `
+        (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
+        (Join-Path $mixer "hx_scale.v") (Join-Path $mixer "hx_finalize.v") `
+        (Join-Path $mixer "hx_mixer.v") (Join-Path $here "tb_mix.v")
+    if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "hx_mixer compile FAILED" -ForegroundColor Red }
+    else {
+        & vvp tb_mix.vvp | Where-Object { $_ -match "co-sim|^RESULT|^MISMATCH" } | ForEach-Object {
+            if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+            elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^MISMATCH") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+            else { Write-Host $_ }
+        }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

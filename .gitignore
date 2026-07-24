@@ -66,3 +66,4 @@ fpga/cores/mixer/sim/work_sim/
 *.vvp
 cubic_vectors.txt
 chan_vectors.txt
+mix_vectors.txt

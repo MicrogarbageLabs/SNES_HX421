@@ -70,9 +70,22 @@ latent — but it is now a *known* latent, in both C and RTL, not a surprise wai
 
 Everything through step 4 runs under `sim/run-cosim.ps1` (Icarus): four combinational primitives
 (~200k vectors) plus the stateful channel (2000 frames), every one bit-exact against the shipping C.
-5. **8-channel + accumulate** — the full render against `mixer_render` with a multi-channel scene.
+5. **8-channel time-multiplexed engine** — `hx_mixer.v`. **DONE**, bit-exact (2026-07-24). One
+   datapath iterates all channels per output frame (the win from dropping the RISC-V core — a single
+   cubic/lerp/scale/finalize instance serves every voice), per-channel state in arrays. Composes the
+   proven pieces: resample -> volume -> pan (both with the C's Q15_ONE unity bypass) -> accumulate ->
+   finalize. Co-simulated against a full `mixer_render` scene — cubic + linear, up/down-sample,
+   per-channel volume, pan L/R, a muted channel, an inactive one — 150 stereo frames, 0 mismatches.
+   Mono-source simplification: one tap window per channel (tap_l == tap_r for mono), L/R split at the
+   pan multiply. Sequencer: PRIME all active channels, then per render frame PRODUCE each (1 cycle)
+   and FINAL. At 96 MHz that is ~10 cycles/frame against a 22.7 us sample period — the headroom the
+   bandwidth analysis predicted.
 6. **PSRAM sample fetch + the DAC seam** — the first part that needs hardware; everything above is
    proven in simulation first.
 
-Only step 6 needs the board. Steps 1-5 are pure RTL-vs-C, which is why the mixer can be built and
-trusted long before it is integrated.
+Steps 1-5 are pure RTL-vs-C and all pass. The entire mixer arithmetic, resampling control, and
+multi-channel accumulate are bit-exact to the shipping C, built and trusted before any integration.
+Remaining before hardware: loop mode (wrapping source read), and the fast 1:1 path (`source_rate ==
+output` skips the interpolator — a pop, not a resample). Then step 6: the source read becomes a real
+PSRAM fetch (with the arbitration priority — mixer's hard deadline over renderer bursts), and the
+finalized stream drives `dac.v`.
