@@ -49,6 +49,31 @@ foreach ($d in $duts) {
     }
 }
 
+# 3. one-channel datapath: golden sequence from the REAL mixer, compared to
+#    the stateful RTL. Different shape from the combinational primitives — links
+#    audio_mixer.c + ring_buffer.c, and the DUT pulls in hx_cubic/hx_lerp.
+$engine = Resolve-Path (Join-Path $mixer "..\..\..\engine")
+Step "channel datapath: golden sequence from the real mixer"
+& gcc -O2 -std=c99 -I"$engine" -o genchan.exe `
+    (Join-Path $here "gen_chan_vectors.c") `
+    (Join-Path $engine "audio\audio_mixer.c") `
+    (Join-Path $engine "containers\ring_buffer.c")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "gen_chan build FAILED" -ForegroundColor Red }
+else {
+    & .\genchan.exe chan_vectors.txt
+    & iverilog -g2012 -o tb_chan.vvp `
+        (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
+        (Join-Path $mixer "hx_chan.v") (Join-Path $here "tb_chan.v")
+    if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "hx_chan compile FAILED" -ForegroundColor Red }
+    else {
+        & vvp tb_chan.vvp | Where-Object { $_ -match "co-sim|^RESULT|^MISMATCH" } | ForEach-Object {
+            if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+            elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^MISMATCH") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+            else { Write-Host $_ }
+        }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
-else { Write-Host "`nALL MIXER PRIMITIVES BIT-EXACT" -ForegroundColor Green }
+else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

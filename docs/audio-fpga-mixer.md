@@ -58,11 +58,18 @@ latent — but it is now a *known* latent, in both C and RTL, not a surprise wai
    shift/offset/clamp — tested generally over 16s/12u/8u/8s formats). **DONE**, bit-exact. The pan
    GAINS themselves (`compute_pan_gains`: `Q15_ONE - |pan|`, note `Q15_ONE == 0x7FFF`) are per-channel
    control logic, not per-sample, so they live on the STM32 side or a trivial combinational block.
-4. **One-channel datapath** — phase accumulator (q32.32 step), tap-window fetch, the three produce
-   paths (fast / resample / loop). Co-sim against `produce_channel_sample` + one-channel render.
+4. **One-channel datapath** — `hx_chan.v`. **DONE**, bit-exact (2026-07-24). q32.32 phase
+   accumulator + sliding tap window feeding the proven kernels, resample / non-loop path (mono).
+   Co-simulated against the SEQUENCE from the real `mixer_render` (one mono channel at unity gain, so
+   its output is the raw interpolated stream) across 5 resample ratios x cubic/linear, 2000 frames,
+   0 mismatches. Model: the resample path is a sliding window over linearly-consumed source; the
+   phase carry says how many samples to slide (clamped to tap count, exactly as the C — including the
+   >4x-downsample source skip). Priming is its own cycle (no output, no phase change) so the sequence
+   still matches the C priming inside its first produce. Loop mode and stereo (a second data lane
+   sharing this control) are the remaining extensions.
 
-All four primitives run under `sim/run-cosim.ps1` (Icarus), ~200k vectors total, every one
-bit-exact. The remaining steps compose these; the arithmetic they rest on is now proven.
+Everything through step 4 runs under `sim/run-cosim.ps1` (Icarus): four combinational primitives
+(~200k vectors) plus the stateful channel (2000 frames), every one bit-exact against the shipping C.
 5. **8-channel + accumulate** — the full render against `mixer_render` with a multi-channel scene.
 6. **PSRAM sample fetch + the DAC seam** — the first part that needs hardware; everything above is
    proven in simulation first.
