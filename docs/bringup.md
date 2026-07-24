@@ -102,9 +102,13 @@ Everything downstream depends on that and nothing else can be trusted until it i
 3. Build a ROM with `map = 0x30`, `carttype = 0x25` in its header.
 4. Load it. Watch the LEDs.
 
-### Result: PASS (2026-07-21, FXPak Pro)
+### Result: MISREAD as a pass (2026-07-21), later shown genuine at H2
 
-`h1_probe.sfc` ran, cycling colours with the drifting band described above.
+`h1_probe.sfc` ran, cycling colours. At the time this was recorded as proof our bitstream configured.
+**It was not** — see H2 below. Our `mini`-derived core never configured usably; the colours came from
+the stock core still resident from power-on. The reasoning below is preserved because it is the
+correct logic applied to a wrong premise, and the premise (that our file was the one loaded) is
+exactly what went unchecked.
 
 That is better than predicted. The chain it exercises is: MCU reads the ROM header, matches
 map/carttype to the OBC1 core, streams `/sd2snes/fpga_obc1.bi3` into the FPGA, waits for `DONE`,
@@ -135,15 +139,18 @@ localises the stall exactly: `load_rom` prints "Loading ...", *then* calls `fpga
 the file, never sees `DONE`, retries ten times and enters `led_panic`. The text stays on screen
 because nothing after it ever runs.
 
-So both directions are now established:
+This table WAS read as establishing both directions. It does not:
 
-| bitstream at `/sd2snes/fpga_obc1.bi3` | result | conclusion |
+| bitstream at `/sd2snes/fpga_obc1.bi3` | result | what it ACTUALLY shows |
 |---|---|---|
-| ours, intact | probe runs, colours cycle | configuration succeeded |
-| ours, truncated | hangs at "Loading ..." | the file is genuinely read and programmed |
+| ours (`mini`), intact | probe runs, colours cycle | **stale stock core still resident** — not proof ours loaded |
+| ours, truncated | hangs at "Loading ..." | a bad file hangs; says nothing about a good one |
 
-Together those rule out a stale `fpga_base` explaining the pass. **H1 is closed: a bitstream built by
-our Quartus flow and packed by our packer configures on real hardware.**
+The error: "intact -> runs" and "truncated -> hangs" are consistent with our file loading, but also
+consistent with our file NEVER loading and the stock core running the intact case. A control that
+proves a *bad* file fails is not a control that proves a *good* file succeeds. The missing test was a
+POSITIVE control — a known-good core producing a DISTINGUISHABLE result — which is exactly what the H2
+signature finally is. See the H2 section.
 
 Recovery is a power cycle plus restoring the good file. `led_panic` is a spin loop; nothing is
 written to flash.
@@ -242,10 +249,52 @@ about 5% over, which is enough to turn a frame that "just fits" on paper into on
 The raycaster's 54-line window at 240x208 gives 54 x 163.9 = **~8850 B**, against the 8802 B the doc
 claims. Unchanged in substance.
 
-## After H1
+## H2 — our logic runs on the FPGA (PASSED 2026-07-24)
 
-- **H2** — a core that does something observable: hold a known value at a cart address the 65816 can
-  read, proving our logic runs and the bus decode works.
+The `h2_base` core intercepts four reads at `$3F:F000-$F003` and serves 'H','X','4','2' from the
+fabric. `h2_probe.sfc` read exactly that and printed **OUR LOGIC IS RUNNING** — bytes at addresses
+that hold `$FF` filler in the ROM, so they can only have come from our Verilog.
+
+This also makes **H1 genuine in retrospect**, which it was not before. The original H1 pass was
+misread: our packed bitstream had never actually configured, and the cycling colours came from the
+stock core still resident from power-on. Two things hid it — the truncated-file control only proved a
+*bad* file hangs, never that a *good* one loads, and every one of our own packed cores hung at
+"Loading ...". H2 is the first unambiguous configuration of a core we built.
+
+### Why every earlier attempt hung: we forked the wrong project
+
+The scaffold forked **`sd2snes_mini`**. That is the minimal boot core embedded in MCU flash to paint
+a power-on message; its `.qsf` sets `ENABLE_CONFIGURATION_PINS OFF` and it has **no MCU ROM-load
+path**. A `mini`-derived core configures fine and then cannot service the ROM load — the menu hangs
+on "Loading ..." indistinguishably from a bitstream that never configured, which is what sent the
+diagnosis wrong three times (LEDs, bank gating, bitstream compression — all real issues, none the
+cause).
+
+**`sd2snes_base` is the core the FXPak loads for a game**: it carries `set_mcu_addr`, `sd_offload`,
+DMA and the full read path. `fpga/build/h2_base/` is `base` with SignalTap stripped (it needed a
+`tap_pll.qip` we do not have, and it is debug-only) and the signature spliced in at the TOP of the
+read priority chain. 6359 LE (41% of the EP4CE15) vs `mini`'s 410 — the size gap IS the ROM-load
+machinery `mini` was missing. The packed `.bi3` is 153 KB, the same order as the stock 97 KB OBC1
+core and nothing like `mini`'s 55 KB.
+
+### The signature detail
+
+- Gated on **bank `$3F`** (`SNES_ADDR[23:16] == 8'h3F`), which the menu — a low-bank LoROM — never
+  addresses, so the interception is invisible to the loader. An earlier version matched `$F000` in
+  every bank and corrupted the menu's own reads.
+- The probe uses long addressing `lda f:$3FF000,x`. In a 128 KB LoROM, `$3F` mirrors to bank `$03`,
+  file offset `$1F000`, which is `$FF` filler — so the stock-core case would read `255 255 255 255`
+  and the two outcomes cannot be confused. `build-h2.ps1` asserts that offset is filler before
+  building.
+- **`carttype $25` crashes bsnes-plus**: it instantiates its OBC1 chip and access-violates on a
+  non-OBC1 ROM. `build-h2.ps1` emits `h2_probe_emu.sfc` (carttype `$00`) for emulator testing, which
+  necessarily shows the STOCK-core result since bsnes has no FPGA.
+
+## Build order from here
+
+- **H2 base is a springboard, not the product.** It is the stock game core plus a four-byte hack; the
+  real HX-421 core replaces the whole read path. But it proves the toolchain end to end and gives a
+  known-good `base` fork to grow from.
 - **H4** — the audio path: `fpga/cores/mixer_out` against the C mixer reference in `engine/`.
 
 ## Gotcha: mgapi.dll hijacks any ROM in bsnes-plus

@@ -46,3 +46,9 @@ Thumbs.db
 desktop.ini
 
 snes/build/
+
+# Quartus build outputs (large, regenerated)
+fpga/build/*/db/
+fpga/build/*/incremental_db/
+fpga/build/*/simulation/
+fpga/build/*/output_files/
