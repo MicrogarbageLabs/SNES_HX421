@@ -60,3 +60,8 @@ fpga/build/*/output_files/
 !fpga/build/*/*.qpf
 !fpga/build/*/*.qip
 !fpga/build/*/*.vh
+
+# mixer co-sim scratch
+fpga/cores/mixer/sim/work_sim/
+*.vvp
+cubic_vectors.txt
