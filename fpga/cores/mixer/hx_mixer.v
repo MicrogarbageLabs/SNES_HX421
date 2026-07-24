@@ -41,7 +41,9 @@ module hx_mixer #(
     // --- per-channel config write (before rendering) ---
     input  wire        cfg_we,
     input  wire [CHW-1:0] cfg_ch,
-    input  wire [2:0]  cfg_field,        // 0 step_lo,1 step_hi,2 flags,3 vol,4 pan_l,5 pan_r
+    // 0 step_lo, 1 step_hi, 2 flags{cubic,active,muted,loop}, 3 vol,
+    // 4 pan_l, 5 pan_r, 6 loop_len
+    input  wire [2:0]  cfg_field,
     input  wire [31:0] cfg_data,
 
     // --- output format / headroom (finalize) ---
@@ -55,9 +57,13 @@ module hx_mixer #(
     input  wire        start,            // prime all active channels
     input  wire        render,           // produce one output frame
 
-    // --- source read (combinational, caller-provided) ---
+    // --- source read (combinational, caller-provided). Four per-tap addresses
+    //     so the module owns loop wrapping; caller returns src[rd_ch][rd_aN]. ---
     output wire [CHW-1:0] rd_ch,
-    output wire [31:0]    rd_base,
+    output wire [31:0]    rd_a0,
+    output wire [31:0]    rd_a1,
+    output wire [31:0]    rd_a2,
+    output wire [31:0]    rd_a3,
     input  wire signed [15:0] rd_s0,
     input  wire signed [15:0] rd_s1,
     input  wire signed [15:0] rd_s2,
@@ -79,6 +85,8 @@ module hx_mixer #(
     reg         cubic   [0:N-1];
     reg         active  [0:N-1];
     reg         muted   [0:N-1];
+    reg         loopf   [0:N-1];          // loop mode
+    reg  [31:0] loop_len[0:N-1];          // samples in the loop buffer (>= 4)
     reg  signed [15:0] vol   [0:N-1];
     reg  signed [15:0] pan_l [0:N-1];
     reg  signed [15:0] pan_r [0:N-1];
@@ -89,16 +97,19 @@ module hx_mixer #(
             for (j = 0; j < N; j = j + 1) begin
                 phase[j]<=0; tap0[j]<=0; tap1[j]<=0; tap2[j]<=0; tap3[j]<=0;
                 src_pos[j]<=0; step[j]<=0; cubic[j]<=0; active[j]<=0; muted[j]<=0;
+                loopf[j]<=0; loop_len[j]<=32'd1;
                 vol[j]<=Q15_ONE; pan_l[j]<=Q15_ONE; pan_r[j]<=Q15_ONE;
             end
         end else if (cfg_we) begin
             case (cfg_field)
                 3'd0: step[cfg_ch][31:0]  <= cfg_data;
                 3'd1: step[cfg_ch][63:32] <= cfg_data;
-                3'd2: begin cubic[cfg_ch]<=cfg_data[0]; active[cfg_ch]<=cfg_data[1]; muted[cfg_ch]<=cfg_data[2]; end
-                3'd3: vol[cfg_ch]   <= cfg_data[15:0];
-                3'd4: pan_l[cfg_ch] <= cfg_data[15:0];
-                3'd5: pan_r[cfg_ch] <= cfg_data[15:0];
+                3'd2: begin cubic[cfg_ch]<=cfg_data[0]; active[cfg_ch]<=cfg_data[1];
+                            muted[cfg_ch]<=cfg_data[2]; loopf[cfg_ch]<=cfg_data[3]; end
+                3'd3: vol[cfg_ch]     <= cfg_data[15:0];
+                3'd4: pan_l[cfg_ch]   <= cfg_data[15:0];
+                3'd5: pan_r[cfg_ch]   <= cfg_data[15:0];
+                3'd6: loop_len[cfg_ch]<= cfg_data;
                 default: ;
             endcase
         end
@@ -112,9 +123,19 @@ module hx_mixer #(
 
     wire [CHW-1:0] cur = ci[CHW-1:0];
 
-    // read address: PRIME reads from 0, PRODUCE from the channel's src_pos
-    assign rd_ch   = cur;
-    assign rd_base = (state == S_PRIME) ? 32'd0 : src_pos[cur];
+    // read base: PRIME reads from 0, PRODUCE from the channel's src_pos.
+    // Loop wraps each per-tap address mod loop_len; a single compare-subtract
+    // suffices because base < loop_len and the offset is <= 3 (loop_len >= 4).
+    wire [31:0] base = (state == S_PRIME) ? 32'd0 : src_pos[cur];
+    wire [31:0] L    = loop_len[cur];
+    function [31:0] wrap; input [31:0] x; input [31:0] len;
+        wrap = (x >= len) ? (x - len) : x;
+    endfunction
+    assign rd_ch = cur;
+    assign rd_a0 = loopf[cur] ? wrap(base,     L) : base;
+    assign rd_a1 = loopf[cur] ? wrap(base + 1, L) : base + 1;
+    assign rd_a2 = loopf[cur] ? wrap(base + 2, L) : base + 2;
+    assign rd_a3 = loopf[cur] ? wrap(base + 3, L) : base + 3;
 
     // ---- shared datapath (combinational, on the current channel) ----
     wire signed [15:0] cub_out, lin_out;
@@ -193,7 +214,14 @@ module hx_mixer #(
                                 default: begin tap0[cur]<=rd_s0; tap1[cur]<=rd_s1; end
                             endcase
                         end
-                        if (n_adv > 0) src_pos[cur] <= src_pos[cur] + {29'd0, n_adv};
+                        if (n_adv > 0) begin
+                            // loop wraps src_pos mod loop_len (n_adv <= 4 <= L,
+                            // so one subtract); non-loop is monotonic.
+                            if (loopf[cur] && (src_pos[cur] + {29'd0, n_adv} >= loop_len[cur]))
+                                src_pos[cur] <= src_pos[cur] + {29'd0, n_adv} - loop_len[cur];
+                            else
+                                src_pos[cur] <= src_pos[cur] + {29'd0, n_adv};
+                        end
                         phase[cur] <= new_phase - {n_adv_full, 32'd0};
                     end
                     ci <= ci + 1;

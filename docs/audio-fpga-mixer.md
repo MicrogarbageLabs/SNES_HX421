@@ -83,9 +83,21 @@ Everything through step 4 runs under `sim/run-cosim.ps1` (Icarus): four combinat
 6. **PSRAM sample fetch + the DAC seam** — the first part that needs hardware; everything above is
    proven in simulation first.
 
-Steps 1-5 are pure RTL-vs-C and all pass. The entire mixer arithmetic, resampling control, and
-multi-channel accumulate are bit-exact to the shipping C, built and trusted before any integration.
-Remaining before hardware: loop mode (wrapping source read), and the fast 1:1 path (`source_rate ==
-output` skips the interpolator — a pop, not a resample). Then step 6: the source read becomes a real
-PSRAM fetch (with the arbitration priority — mixer's hard deadline over renderer bursts), and the
-finalized stream drives `dac.v`.
+Steps 1-5 are pure RTL-vs-C and all pass. The entire mixer — arithmetic, resampling control,
+multi-channel accumulate, AND every source path — is bit-exact to the shipping C, built and trusted
+before any integration. Two paths that turned out NOT to need new RTL or were folded in:
+
+- **Fast 1:1 path is FREE.** A channel at `source_rate == output` produces `step == 2^32`, which the
+  resample path advances exactly one sample per frame at `frac == 0` — and both interpolators return
+  the exact source sample there. So it is bit-identical to the C's fast-path pop with no separate
+  logic. Confirmed by a 1:1 channel in the scene matching. One fewer path to build and verify on
+  silicon.
+- **Loop mode is the same sliding window** with the source read wrapped mod `loop_len` and no
+  underrun. The next-load index tracks identically to non-loop; only the address wraps (one
+  compare-subtract, valid for `loop_len >= 4`). Verified with three looping channels wrapping small
+  buffers several times inside one render. `hx_mixer` exposes four per-tap read addresses so the
+  module owns the wrap.
+
+Only **step 6** remains, and it is the only part that needs the board: the four combinational source
+reads become real PSRAM fetches (with the arbitration priority — mixer's hard 22.7 us deadline over
+renderer bursts), and the finalized stereo stream drives `dac.v`. Everything upstream is proven.

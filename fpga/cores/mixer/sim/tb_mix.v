@@ -12,7 +12,7 @@
 `default_nettype none
 
 module tb_mix;
-    localparam N = 8, CHW = 3, STRIDE = 512;
+    localparam N = 8, CHW = 3, STRIDE = 1024;
 
     reg          clk = 0, rst;
     reg          cfg_we;
@@ -23,19 +23,23 @@ module tb_mix;
     reg  signed [31:0] out_offset, out_min, out_max;
     reg          start, render;
     wire [CHW-1:0] rd_ch;
-    wire [31:0]  rd_base;
+    wire [31:0]  rd_a0, rd_a1, rd_a2, rd_a3;
     wire signed [31:0] out_l, out_r;
     wire         out_valid;
 
-    // one source memory, channel i based at i*STRIDE. Combinational 4-wide
-    // read, 0 past the end (matches the C's peek-past-end -> silence).
+    // one source memory, channel i based at i*STRIDE. Per-tap addresses come
+    // from the module (loop wrapping is its job); 0 past the end matches the
+    // C's peek-past-end -> silence (loop channels never read past the end).
     reg signed [15:0] src [0:N*STRIDE-1];
-    wire [31:0] a0 = rd_ch*STRIDE + rd_base;
+    wire [31:0] b0 = rd_ch*STRIDE + rd_a0;
+    wire [31:0] b1 = rd_ch*STRIDE + rd_a1;
+    wire [31:0] b2 = rd_ch*STRIDE + rd_a2;
+    wire [31:0] b3 = rd_ch*STRIDE + rd_a3;
     wire signed [15:0] rd_s0, rd_s1, rd_s2, rd_s3;
-    assign rd_s0 = (a0     < N*STRIDE) ? src[a0]     : 16'sd0;
-    assign rd_s1 = (a0+1   < N*STRIDE) ? src[a0+1]   : 16'sd0;
-    assign rd_s2 = (a0+2   < N*STRIDE) ? src[a0+2]   : 16'sd0;
-    assign rd_s3 = (a0+3   < N*STRIDE) ? src[a0+3]   : 16'sd0;
+    assign rd_s0 = (b0 < N*STRIDE) ? src[b0] : 16'sd0;
+    assign rd_s1 = (b1 < N*STRIDE) ? src[b1] : 16'sd0;
+    assign rd_s2 = (b2 < N*STRIDE) ? src[b2] : 16'sd0;
+    assign rd_s3 = (b3 < N*STRIDE) ? src[b3] : 16'sd0;
 
     hx_mixer #(.N(N), .CHW(CHW)) dut (
         .clk(clk), .rst(rst),
@@ -43,7 +47,7 @@ module tb_mix;
         .headroom_bits(headroom), .out_shift(out_shift), .out_offset(out_offset),
         .out_min(out_min), .out_max(out_max),
         .start(start), .render(render),
-        .rd_ch(rd_ch), .rd_base(rd_base),
+        .rd_ch(rd_ch), .rd_a0(rd_a0), .rd_a1(rd_a1), .rd_a2(rd_a2), .rd_a3(rd_a3),
         .rd_s0(rd_s0), .rd_s1(rd_s1), .rd_s2(rd_s2), .rd_s3(rd_s3),
         .out_l(out_l), .out_r(out_r), .out_valid(out_valid)
     );
@@ -51,7 +55,7 @@ module tb_mix;
     always #5 clk = ~clk;
 
     integer fd, r, i, k, hr, sh, nn, nout, stride, fails;
-    integer ci, ccu, cac, cmu, sci, snsrc;
+    integer ci, ccu, cac, cmu, clp, cll, sci, snsrc;
     reg [31:0] shi, slo, offh, minh, maxh;
     reg [15:0] cvol, cpl, cpr, sv;
     reg [15:0] exp_l [0:1023];
@@ -74,16 +78,17 @@ module tb_mix;
         headroom = hr[3:0]; out_shift = sh[3:0];
         out_offset = offh; out_min = minh; out_max = maxh;
 
-        // N channel config lines
+        // N channel config lines: i cubic active muted loop loop_len step vol pans
         for (i=0;i<nn;i=i+1) begin
-            r = $fscanf(fd, "CH %d %d %d %d %h %h %h %h %h\n",
-                        ci, ccu, cac, cmu, shi, slo, cvol, cpl, cpr);
+            r = $fscanf(fd, "CH %d %d %d %d %d %d %h %h %h %h %h\n",
+                        ci, ccu, cac, cmu, clp, cll, shi, slo, cvol, cpl, cpr);
             cfgw(ci[CHW-1:0], 3'd0, slo);
             cfgw(ci[CHW-1:0], 3'd1, shi);
-            cfgw(ci[CHW-1:0], 3'd2, {29'd0, cmu[0], cac[0], ccu[0]});
+            cfgw(ci[CHW-1:0], 3'd2, {28'd0, clp[0], cmu[0], cac[0], ccu[0]});
             cfgw(ci[CHW-1:0], 3'd3, {16'd0, cvol});
             cfgw(ci[CHW-1:0], 3'd4, {16'd0, cpl});
             cfgw(ci[CHW-1:0], 3'd5, {16'd0, cpr});
+            cfgw(ci[CHW-1:0], 3'd6, cll[31:0]);
         end
 
         // per-channel source
