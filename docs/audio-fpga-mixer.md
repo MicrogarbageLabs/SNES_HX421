@@ -133,17 +133,36 @@ Two results, one of them the kind only synthesis finds:
   chained multiplies (t -> t² -> t³ -> products -> sum) -> volume -> pan -> accumulate. Sim could
   never see this; the co-sim is functional, not timed.
 
-The fix is essentially free: the mixer uses only 112 of 2177 cycles/frame, so the datapath can be
-**pipelined across several cycles** and still finish with vast margin. Plan: register the tap-array
-read, pipeline the cubic into one-multiply-deep stages (t²; t³ + coeffs; the three products; sum +
-halve + saturate), register the volume and pan multiplies, then accumulate. ~6 extra cycles/channel
-is ~48 more cycles/frame — trivial against 2177. The output values are unchanged (pipelining is
-timing only), so the same co-sim re-verifies it.
-
-A real synthesis-only bug was also caught here: `phase`/`tap`/`src_pos` were reset in the config
+A real synthesis-only bug was caught first: `phase`/`tap`/`src_pos` were reset in the config
 always-block and written in the sequencer block — a multiple-driver net, illegal for synthesis,
 which iverilog had silently allowed. Fixed by giving the sequencer sole ownership of the state
 registers.
+
+### Pipelining the datapath (2026-07-24) — 20 -> 74 MHz, still bit-exact
+
+`hx_produce.v`: the produce datapath split into one-multiply-deep registered stages (latency 7) —
+input latch; cubic t²; t³ + coeffs; the three products; cubic finish + lerp finish + select; volume;
+pan. The finalize was then pipelined into two stages (headroom-shift+saturate, then
+shift+offset+clamp). And `phase` was narrowed from a 64-bit q32.32 to a 32-bit fractional register
+(the C zeroes the integer part each frame, so a 32-bit add + carry is exactly equivalent) to drop a
+64-bit adder off the control path. Every change re-verified bit-exact by the same co-sim — pipelining
+is timing, not values — with the frame cost rising only 112 -> 176 cycles (of 2177).
+
+Result: **setup slack −38.9 ns -> −3.2 ns, Fmax ~20 -> ~74 MHz.** Resources basically unchanged
+(4030 LE / 26%, 22 mult / 20%, 211 M9K bits). It does not yet close the 96 MHz memory clock.
+
+The remaining ~3 ns is a systematic pattern, not a single path: every per-channel state update runs
+`ci -> channel mux -> compute -> array demux`, and a few compute chains (the 32-bit phase add, the
+loop wrap, finalize) sit at ~13.5 ns through the mux. Two ways to close it, both bounded:
+
+- **Load-context restructure (preferred, single clock domain):** a cycle that latches the current
+  channel's state into flat working registers, compute on those, store back — isolating the channel
+  mux to the load cycle and the demux to the store cycle, so no compute path crosses a mux. This is
+  the definitive fix and hits 96 MHz.
+- **Divided mixer clock:** run the mixer at ~48 MHz (memory/2) and cross the already-async
+  request/ack read port into the 96 MHz PSRAM domain with 2-FF synchronizers. 74 MHz clears 48 MHz
+  with room; the mixer has 20x cycle headroom so half-rate is fine. Costs a small CDC but no
+  datapath rework.
 
 ### Step 6b — the DAC seam (needs the board)
 

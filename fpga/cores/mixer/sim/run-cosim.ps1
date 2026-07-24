@@ -104,7 +104,7 @@ Step "latency-tolerant render: same scene under modelled PSRAM latency"
 & iverilog -g2012 -o tb_mix_seq.vvp `
     (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
     (Join-Path $mixer "hx_scale.v") (Join-Path $mixer "hx_finalize.v") `
-    (Join-Path $mixer "hx_mixer_seq.v") (Join-Path $here "tb_mix_seq.v")
+    (Join-Path $mixer "hx_produce.v") (Join-Path $mixer "hx_mixer_seq.v") (Join-Path $here "tb_mix_seq.v")
 if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "hx_mixer_seq compile FAILED" -ForegroundColor Red }
 else {
     foreach ($lat in 1, 7, 12) {

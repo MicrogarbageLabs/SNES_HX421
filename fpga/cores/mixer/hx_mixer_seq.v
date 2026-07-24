@@ -65,13 +65,17 @@ module hx_mixer_seq #(
 );
     localparam signed [15:0] Q15_ONE = 16'sd32767;
 
-    // per-channel state + config
-    reg  [63:0] phase   [0:N-1];
+    // per-channel state + config. phase is the FRACTIONAL part only (q0.32): the
+    // C keeps the integer part at 0 each frame, so a 32-bit frac + a tiny carry
+    // is exactly equivalent and avoids a 64-bit add on the critical path.
+    reg  [31:0] phase   [0:N-1];
     reg  signed [15:0] tap0 [0:N-1], tap1 [0:N-1], tap2 [0:N-1], tap3 [0:N-1];
-    reg  [31:0] src_pos [0:N-1];
+    // sample indices: 24 bits (16M samples/channel, ~6 min at 44.1 kHz) is
+    // ample and keeps the loop-wrap add/compare/subtract off the critical path.
+    reg  [23:0] src_pos [0:N-1];
     reg  [63:0] step    [0:N-1];
     reg         cubic   [0:N-1], active [0:N-1], muted [0:N-1], loopf [0:N-1];
-    reg  [31:0] loop_len[0:N-1];
+    reg  [23:0] loop_len[0:N-1];
     reg  signed [15:0] vol [0:N-1], pan_l [0:N-1], pan_r [0:N-1];
 
     // CONFIG registers only. The STATE registers (phase, tap*, src_pos) are
@@ -82,7 +86,7 @@ module hx_mixer_seq #(
         if (rst) begin
             for (j=0;j<N;j=j+1) begin
                 step[j]<=0; cubic[j]<=0; active[j]<=0; muted[j]<=0;
-                loopf[j]<=0; loop_len[j]<=32'd1; vol[j]<=Q15_ONE; pan_l[j]<=Q15_ONE; pan_r[j]<=Q15_ONE;
+                loopf[j]<=0; loop_len[j]<=24'd1; vol[j]<=Q15_ONE; pan_l[j]<=Q15_ONE; pan_r[j]<=Q15_ONE;
             end
         end else if (cfg_we) begin
             case (cfg_field)
@@ -93,60 +97,69 @@ module hx_mixer_seq #(
                 3'd3: vol[cfg_ch]     <= cfg_data[15:0];
                 3'd4: pan_l[cfg_ch]   <= cfg_data[15:0];
                 3'd5: pan_r[cfg_ch]   <= cfg_data[15:0];
-                3'd6: loop_len[cfg_ch]<= cfg_data;
+                3'd6: loop_len[cfg_ch]<= cfg_data[23:0];
                 default: ;
             endcase
         end
     end
 
     // sequencer
-    localparam S_IDLE=3'd0, S_SETUP=3'd1, S_ISSUE=3'd2, S_WAIT=3'd3, S_NEXT=3'd4, S_FINAL=3'd5;
+    localparam S_IDLE=3'd0, S_SETUP=3'd1, S_ISSUE=3'd2, S_WAIT=3'd3, S_NEXT=3'd4,
+               S_FINAL=3'd5, S_PWAIT=3'd6, S_FINAL2=3'd7;
     reg [2:0]  state;
     reg        mode_prime;            // 1 = priming, 0 = producing
     reg [CHW:0] ci;
     reg signed [31:0] acc_l, acc_r;
     reg [2:0]  k;                     // shift-loads remaining for this channel
-    reg [63:0] stash_new_phase;
-    reg [31:0] stash_nadv_full;
 
     wire [CHW-1:0] cur = ci[CHW-1:0];
     assign rd_ch = cur;
     assign busy  = (state != S_IDLE);
 
-    // combinational datapath on the current channel
-    wire signed [15:0] cub_out, lin_out;
-    hx_cubic u_cub (.p0(tap0[cur]),.p1(tap1[cur]),.p2(tap2[cur]),.p3(tap3[cur]),
-                    .frac_q32(phase[cur][31:0]),.out(cub_out));
-    hx_lerp  u_lin (.a(tap0[cur]),.b(tap1[cur]),.frac_q32(phase[cur][31:0]),.out(lin_out));
-    wire signed [15:0] s_raw = cubic[cur] ? cub_out : lin_out;
-
-    wire signed [15:0] sv_out, pl_out, pr_out;
-    hx_scale u_vol (.a(s_raw),.b(vol[cur]),.out(sv_out));
-    wire signed [15:0] sv = (vol[cur]==Q15_ONE) ? s_raw : sv_out;
-    hx_scale u_pl (.a(sv),.b(pan_l[cur]),.out(pl_out));
-    hx_scale u_pr (.a(sv),.b(pan_r[cur]),.out(pr_out));
-    wire signed [15:0] samp_l = (pan_l[cur]==Q15_ONE) ? sv : pl_out;
-    wire signed [15:0] samp_r = (pan_r[cur]==Q15_ONE) ? sv : pr_out;
+    // pipelined produce datapath (interp -> vol -> pan), latency 7, so it holds
+    // the 96 MHz clock. One channel in flight at a time (the sequencer serializes).
+    reg  prod_load;
+    wire signed [15:0] pr_samp_l, pr_samp_r;
+    wire        pr_dvalid;
+    hx_produce u_prod (
+        .clk(clk), .load(prod_load),
+        .p0(tap0[cur]), .p1(tap1[cur]), .p2(tap2[cur]), .p3(tap3[cur]),
+        .frac(phase[cur]), .cubic(cubic[cur]),
+        .vol(vol[cur]), .pan_l(pan_l[cur]), .pan_r(pan_r[cur]),
+        .samp_l(pr_samp_l), .samp_r(pr_samp_r), .dvalid(pr_dvalid)
+    );
 
     wire [2:0]  n_taps    = cubic[cur] ? 3'd4 : 3'd2;
     wire [1:0]  cur_idx   = cubic[cur] ? 2'd1 : 2'd0;
-    wire [63:0] new_phase = phase[cur] + step[cur];
-    wire [31:0] n_adv_full = new_phase[63:32];
+    // 32-bit fractional add; the carry plus step's integer part give the whole-
+    // sample advance. Equivalent to the C's 64-bit phase+step then -n_adv<<32.
+    wire [32:0] frac_sum  = {1'b0, phase[cur]} + {1'b0, step[cur][31:0]};
+    wire [31:0] n_adv_full = step[cur][63:32] + {31'd0, frac_sum[32]};
     wire [2:0]  n_adv = (n_adv_full >= {29'd0,n_taps}) ? n_taps : n_adv_full[2:0];
 
-    wire signed [31:0] fin_l, fin_r;
-    hx_finalize u_fl (.accum(acc_l),.headroom_bits(headroom_bits),.out_shift(out_shift),
-                      .out_offset(out_offset),.out_min(out_min),.out_max(out_max),.out(fin_l));
-    hx_finalize u_fr (.accum(acc_r),.headroom_bits(headroom_bits),.out_shift(out_shift),
-                      .out_offset(out_offset),.out_min(out_min),.out_max(out_max),.out(fin_r));
+    // finalize, pipelined into two stages (it was the critical path when flat):
+    //   stage 1 = headroom shift + q15 saturate  -> fin1_l/r
+    //   stage 2 = output-format shift + offset + clamp -> out_l/r
+    reg signed [31:0] fin1_l, fin1_r;
+    function signed [31:0] fin_sat; input signed [31:0] v0;
+        fin_sat = (v0 > 32767) ? 32'sd32767 : (v0 < -32768) ? -32'sd32768 : v0;
+    endfunction
+    function signed [31:0] fin_clamp; input signed [31:0] v1;
+        reg signed [31:0] v2;
+        begin
+            v2 = (v1 >>> out_shift) + out_offset;
+            fin_clamp = (v2 > out_max) ? out_max : (v2 < out_min) ? out_min : v2;
+        end
+    endfunction
 
     // src_pos+1 with loop wrap
-    wire [31:0] nsp = (loopf[cur] && (src_pos[cur]+32'd1 >= loop_len[cur]))
-                      ? (src_pos[cur]+32'd1 - loop_len[cur]) : (src_pos[cur]+32'd1);
+    wire [23:0] nsp = (loopf[cur] && (src_pos[cur]+24'd1 >= loop_len[cur]))
+                      ? (src_pos[cur]+24'd1 - loop_len[cur]) : (src_pos[cur]+24'd1);
 
     always @(posedge clk) begin
         out_valid <= 1'b0;
         rd_req    <= 1'b0;
+        prod_load <= 1'b0;
         if (rst) begin
             state <= S_IDLE; ci <= 0; acc_l <= 0; acc_r <= 0; k <= 0;
             for (j=0;j<N;j=j+1) begin
@@ -165,18 +178,25 @@ module hx_mixer_seq #(
                     end else if (mode_prime) begin
                         // zero the window, then (n_taps - cur_idx) shift-loads from src 0..
                         tap0[cur]<=0; tap1[cur]<=0; tap2[cur]<=0; tap3[cur]<=0;
-                        src_pos[cur] <= 0;
+                        src_pos[cur] <= 24'd0;
                         phase[cur]   <= 0;
                         k <= n_taps - {1'b0,cur_idx};
                         state <= S_ISSUE;
                     end else begin
-                        // produce: interp current window, accumulate, then advance n_adv
+                        // produce: kick the pipeline for this channel, wait for it,
+                        // accumulate, then advance. (cur / taps / phase are stable
+                        // through S_PWAIT, so no stash is needed.)
+                        prod_load <= 1'b1;
+                        state <= S_PWAIT;
+                    end
+                end
+
+                S_PWAIT: begin
+                    if (pr_dvalid) begin
                         if (!muted[cur]) begin
-                            acc_l <= acc_l + {{16{samp_l[15]}}, samp_l};
-                            acc_r <= acc_r + {{16{samp_r[15]}}, samp_r};
+                            acc_l <= acc_l + {{16{pr_samp_l[15]}}, pr_samp_l};
+                            acc_r <= acc_r + {{16{pr_samp_r[15]}}, pr_samp_r};
                         end
-                        stash_new_phase <= new_phase;
-                        stash_nadv_full <= n_adv_full;
                         k <= n_adv;
                         state <= (n_adv > 0) ? S_ISSUE : S_NEXT;
                     end
@@ -187,7 +207,7 @@ module hx_mixer_seq #(
                         state <= S_NEXT;
                     end else begin
                         rd_req  <= 1'b1;
-                        rd_addr <= src_pos[cur];      // already in [0,loop_len) for loop
+                        rd_addr <= {8'd0, src_pos[cur]};  // in [0,loop_len) for loop
                         state   <= S_WAIT;
                     end
                 end
@@ -207,15 +227,25 @@ module hx_mixer_seq #(
                 end
 
                 S_NEXT: begin
+                    // phase[cur] is untouched until here, so combinational
+                    // new_phase / n_adv_full still describe this channel's advance.
                     if (!mode_prime && active[cur])
-                        phase[cur] <= stash_new_phase - {stash_nadv_full, 32'd0};
+                        phase[cur] <= frac_sum[31:0];   // integer part stays 0
                     ci <= ci + 1;
                     if (ci == N-1) state <= mode_prime ? S_IDLE : S_FINAL;
                     else           state <= S_SETUP;
                 end
 
                 S_FINAL: begin
-                    out_l <= fin_l; out_r <= fin_r; out_valid <= 1'b1;
+                    fin1_l <= fin_sat(acc_l >>> headroom_bits);
+                    fin1_r <= fin_sat(acc_r >>> headroom_bits);
+                    state  <= S_FINAL2;
+                end
+
+                S_FINAL2: begin
+                    out_l <= fin_clamp(fin1_l);
+                    out_r <= fin_clamp(fin1_r);
+                    out_valid <= 1'b1;
                     state <= S_IDLE;
                 end
             endcase

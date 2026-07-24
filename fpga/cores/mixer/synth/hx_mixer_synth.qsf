@@ -10,6 +10,7 @@ set_global_assignment -name VERILOG_FILE ../hx_cubic.v
 set_global_assignment -name VERILOG_FILE ../hx_lerp.v
 set_global_assignment -name VERILOG_FILE ../hx_scale.v
 set_global_assignment -name VERILOG_FILE ../hx_finalize.v
+set_global_assignment -name VERILOG_FILE ../hx_produce.v
 set_global_assignment -name VERILOG_FILE ../hx_mixer_seq.v
 set_global_assignment -name SDC_FILE hx_mixer_synth.sdc
 
