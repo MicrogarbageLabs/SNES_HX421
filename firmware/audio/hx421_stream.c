@@ -46,21 +46,24 @@ void hx421_stream_arb_init(Hx421StreamArb *a, const Hx421StreamPlat *plat,
 
 int hx421_stream_start(Hx421StreamArb *a, int s,
                        uint32_t psram_base, uint32_t ring_size,
-                       uint32_t data_off, uint32_t data_bytes, int looping) {
+                       uint32_t data_off, uint32_t data_bytes, int looping,
+                       uint32_t prime_bytes, int prio) {
     Hx421Stream *st;
     if (s < 0 || s >= HX421_STREAM_MAX) return -1;
     if (ring_size < 2 * a->chunk || (ring_size & (FRAME - 1))) return -2;
     if (data_bytes < FRAME) return -3;
     st = &a->str[s];
-    st->psram_base = psram_base;
-    st->ring_size  = ring_size;
-    st->data_off   = data_off;
-    st->data_bytes = data_bytes & ~(FRAME - 1);
-    st->write_pos  = 0;
-    st->file_pos   = 0;
-    st->looping    = looping ? 1 : 0;
-    st->primed     = 0;
-    st->active     = 1;
+    st->psram_base  = psram_base;
+    st->ring_size   = ring_size;
+    st->data_off    = data_off;
+    st->data_bytes  = data_bytes & ~(FRAME - 1);
+    st->prime_bytes = prime_bytes & ~(FRAME - 1);
+    st->write_pos   = 0;
+    st->file_pos    = 0;
+    st->looping     = looping ? 1 : 0;
+    st->primed      = 0;
+    st->prio        = (prio < 0) ? 0 : (prio > 3 ? 3 : (uint8_t)prio);
+    st->active      = 1;
     return 0;
 }
 
@@ -75,21 +78,25 @@ int hx421_stream_ready(const Hx421StreamArb *a, int s) {
 
 int hx421_stream_service(Hx421StreamArb *a) {
     int i, best = -1;
-    uint32_t best_deficit = 0;
+    uint32_t best_score = 0;
     Hx421Stream *st;
     uint32_t fill, target, run, room;
 
-    /* choose the active stream furthest below its target that still has
-     * data to give (emptiest-first; index order breaks ties). */
+    /* choose the most-urgent active stream below its target that still has
+     * data to give. Urgency = deficit weighted by priority, so the FMV
+     * stream (higher prio, frame-drop on underrun) is refilled ahead of the
+     * music streams when SD bandwidth is contended. Index order breaks ties. */
     for (i = 0; i < HX421_STREAM_MAX; i++) {
+        uint32_t score;
         if (!a->str[i].active) continue;
         /* source exhausted and not looping -> nothing to do */
         if (!a->str[i].looping && a->str[i].file_pos >= a->str[i].data_bytes) continue;
         fill   = fill_of(a, i);
         target = target_of(a, i);
         if (fill >= target) continue;                 /* full enough */
-        if ((target - fill) > best_deficit || best < 0) {
-            best_deficit = target - fill;
+        score = (target - fill) * (uint32_t)(a->str[i].prio + 1);
+        if (best < 0 || score > best_score) {
+            best_score = score;
             best = i;
         }
     }
@@ -121,7 +128,14 @@ int hx421_stream_service(Hx421StreamArb *a) {
     st->file_pos  += run;
     if (st->file_pos >= st->data_bytes && st->looping) st->file_pos = 0;
 
-    if (!st->primed && fill_of(a, best) >= target) st->primed = 1;
+    /* ready once the primed head is loaded (prime_bytes, capped at target;
+     * default = full target). Lets playback start after a small head rather
+     * than waiting for the whole ring, while refill continues to target. */
+    if (!st->primed) {
+        uint32_t head = st->prime_bytes ? st->prime_bytes : target;
+        if (head > target) head = target;
+        if (fill_of(a, best) >= head) st->primed = 1;
+    }
 
     a->rr = (best + 1) % HX421_STREAM_MAX;
     return 1;

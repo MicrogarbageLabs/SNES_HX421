@@ -24,12 +24,15 @@ is explicitly rejected.
  SNES ROM: read joystick ──▶ snescmd ──▶ M4 ;  read FFT bands ◀── ; draw sprite bars
 ```
 
-## PSRAM memory map (above the loaded ROM)
-- `RING_A`, `RING_B` — per-stream ring buffers (e.g. 32–64 KB each; sized in the
-  build once we see real refill cadence). 16-bit stereo samples, mixer-native.
-- `BLEEP_BANK` — a few short SFX samples preloaded once (the "bleeps and bloops"),
-  played as extra mixer channels on keypress.
-- Chosen to not collide with the tiny HX421-mode cart ROM image in PSRAM.
+## PSRAM memory map (above the loaded ROM) — 16 MB available, rings are free
+- `RING_MUSIC0`, `RING_MUSIC1` — the two PCM music rings (16-bit stereo,
+  mixer-native). Each begins with a primed head. Default ~32–64 KB; with 16 MB we
+  can be generous and tune on hardware.
+- `RING_FMV_AUDIO` + `RING_FMV_VIDEO` — the FMV stream's two rings (audio channel
+  + video frames), fed from one SD file, primed heads, highest priority.
+- `BLEEP_BANK` — a few short SFX preloaded once, played as extra mixer channels on
+  keypress (FPGA-resident, no streaming).
+- All above the HX421-mode cart ROM image in PSRAM.
 
 ## The three seams that need the FPGA side (i.e. 6b work)
 1. **Offload → ring, not just dac_buf.** Today `tgt=1` (dac_buf) is what MSU uses;
@@ -45,7 +48,33 @@ is explicitly rejected.
      since the M4 no longer sees the mixed samples. `audio_fft` is built to FFT a
      captured window — this is exactly its input. DECISION: capture width/rate.
 
-## STM32 side — the streaming arbiter (this task)
+## The STM32 internal SD-fetch arbiter (foundational mechanism)
+The M4 runs one internal arbiter that schedules SD file fetches across up to
+**3 streams: two PCM music + one FMV** (the FMV cap is because it interpolates
+audio *and* video, so it is the heavy one). Each stream's PSRAM buffer is a
+**primed head** — loaded up front so playback/seek starts instantly and covers
+SD-fetch latency — followed by **requested data**, the on-demand refills the
+arbiter issues as the buffer drains. Refill order is **priority-weighted**: the
+FMV stream (a starved buffer drops a frame) is serviced ahead of the music
+streams under SD contention.
+
+Built + host-tested: `firmware/audio/hx421_stream.{c,h}` — N-stream ring producer
+with per-stream `prime_bytes` (head size) and `prio`. Selection is
+deficit×(prio+1), emptiest-first within a priority. Ring-wrap and source-loop are
+independent split conditions; non-looping stops at EOF. Proven on the host (mock
+SD + simulated mixer drain): no underrun, byte-exact across loop+wrap, EOF, and
+priority ordering (`tools/hx421_stream_test.c`).
+
+### The FMV stream (A/V) — how it differs from a PCM stream
+FMV is one SD file the arbiter fetches, but it fills **two** PSRAM rings: a video
+ring (frames for the FMV/renderer path) and an **audio ring that is just another
+mixer channel** — so FMV audio mixes with the two music streams and the bleeps in
+the same 8-ch FPGA mixer. The fetch demuxes A/V (or the FPGA does). Its audio
+channel uses the same `hx421_stream` mechanism; the video ring is a parallel
+consumer with its own drain pointer. It carries the highest `prio`. (The demo
+here is the 2-PCM subset; the FMV slot is the third, designed-in from the start.)
+
+## STM32 side — porting the rest of the stack
 Ported from `engine/audio` (already M4-minded C):
 - `audio_wav_read` + `wav.h` — parse the two WAVs (rate/channels/data extent).
 - `audio_ring_stream` / `audio_file_stream` — per-stream: file cursor, ring write

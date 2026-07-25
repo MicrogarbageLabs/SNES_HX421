@@ -57,7 +57,39 @@ static uint32_t mock_read_ptr(void *ctx, int s) {
     return m->read_ptr[s];
 }
 
+/* ---- focused priority check: equal deficit, different prio -> higher prio
+ *      is serviced first. Deterministic, no simulation. ---- */
+static int   pc_served = -1;
+static uint32_t pc_rp[HX421_STREAM_MAX];
+static int   pc_offload(void *c, int s, uint32_t a, uint32_t b, uint32_t l) {
+    (void)c;(void)a;(void)b;(void)l; pc_served = s; return 0;
+}
+static uint32_t pc_read_ptr(void *c, int s) { (void)c; return pc_rp[s]; }
+
+static int check_priority(void) {
+    Hx421StreamArb a;
+    Hx421StreamPlat p = { .ctx=0, .offload=pc_offload, .read_ptr=pc_read_ptr };
+    hx421_stream_arb_init(&a, &p, 256, 0, 0);
+    /* two identical rings, both drained to the same fill; s1 has FMV-like prio */
+    hx421_stream_start(&a, 0, 0x0, 4096, 0, 8192, 1, 0, 0);
+    hx421_stream_start(&a, 1, 0x8000, 4096, 0, 8192, 1, 0, 2);
+    /* pretend both are primed and equally half-empty */
+    a.str[0].write_pos = 2048; a.str[1].write_pos = 2048;
+    a.str[0].primed = a.str[1].primed = 1;
+    pc_rp[0] = pc_rp[1] = 0;               /* fill = 2048 each, equal deficit */
+    pc_served = -1;
+    hx421_stream_service(&a);
+    if (pc_served != 1) {
+        printf("FAIL: priority — served stream %d, expected the high-prio 1\n", pc_served);
+        return 1;
+    }
+    printf("priority: equal deficit -> high-prio stream serviced first (ok)\n");
+    return 0;
+}
+
 int main(void) {
+    if (check_priority()) return 1;
+
     static uint8_t src0[10000], src1[3000], src2[5000];
     Mock m; memset(&m, 0, sizeof m);
     uint32_t i;
@@ -77,9 +109,12 @@ int main(void) {
     uint32_t rsz [NSTR] = { 4096,    8192,    4096 };
     int loop[NSTR]      = { 1,       1,       0 };  /* stream 2 = non-looping */
     uint32_t datalen[NSTR] = { 10000&~3u, 3000&~3u, 5000&~3u };
+    uint32_t prime[NSTR] = { 1024,    2048,    0 };   /* small heads; s2 default */
+    int prio[NSTR]       = { 0,       0,       2 };   /* s2 = "FMV-like" priority  */
     int s;
     for (s = 0; s < NSTR; s++)
-        if (hx421_stream_start(&a, s, base[s], rsz[s], m.data_off[s], datalen[s], loop[s])) {
+        if (hx421_stream_start(&a, s, base[s], rsz[s], m.data_off[s], datalen[s],
+                               loop[s], prime[s], prio[s])) {
             printf("FAIL: start(%d)\n", s); return 1;
         }
 

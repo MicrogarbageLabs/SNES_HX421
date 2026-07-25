@@ -54,12 +54,19 @@ typedef struct {
     uint32_t data_off;     /* WAV data-chunk file offset (bytes)         */
     uint32_t data_bytes;   /* WAV data-chunk length (bytes)              */
 
+    uint32_t prime_bytes;  /* primed-head size: fill this much before the  *
+                            * stream reports ready (covers SD-fetch latency *
+                            * at start). 0 -> default (target fill).        */
+
     uint32_t write_pos;    /* next write offset in ring [0,ring_size)    */
     uint32_t file_pos;     /* bytes consumed from the data chunk         */
 
     uint8_t  active;       /* stream slot in use                         */
     uint8_t  looping;      /* wrap the source at data end vs. stop       */
-    uint8_t  primed;       /* ring pre-filled; mixer may read            */
+    uint8_t  primed;       /* primed head loaded; mixer may read         */
+    uint8_t  prio;         /* refill priority: FMV (A/V, frame-drop on    *
+                            * underrun) > PCM music. Higher = serviced    *
+                            * sooner under SD contention.                 */
 } Hx421Stream;
 
 typedef struct {
@@ -78,12 +85,14 @@ void hx421_stream_arb_init(Hx421StreamArb *a, const Hx421StreamPlat *plat,
 
 /* Start stream `s` playing the data region [data_off, data_off+data_bytes)
  * of its source into a ring at `psram_base` of `ring_size` bytes. Does not
- * fill the ring yet — the first hx421_stream_service() calls prime it.
- * Returns 0 on success. `ring_size`/`chunk` should be multiples of the
- * stereo frame (4 bytes). */
+ * fill the ring yet — the first hx421_stream_service() calls load the primed
+ * head (`prime_bytes`, 0 = default). `prio` orders refills under contention
+ * (0 = PCM music; give the FMV stream a higher value). Returns 0 on success.
+ * `ring_size`/`chunk`/`prime_bytes` should be multiples of the frame (4 B). */
 int  hx421_stream_start(Hx421StreamArb *a, int s,
                         uint32_t psram_base, uint32_t ring_size,
-                        uint32_t data_off, uint32_t data_bytes, int looping);
+                        uint32_t data_off, uint32_t data_bytes, int looping,
+                        uint32_t prime_bytes, int prio);
 
 /* Stop stream `s` (mixer channel should be muted separately). */
 void hx421_stream_stop(Hx421StreamArb *a, int s);
