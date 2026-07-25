@@ -124,9 +124,14 @@ real mk3 firmware headers (`arm-none-eabi-gcc -mcpu=cortex-m4`):
   drain pointer (time-estimated at 44.1 kHz until the FPGA exposes the mixer's
   real read position). Opens `music1.wav`/`music2.wav`, parses, lays out two 64 KB
   PSRAM rings at 0x800000/0x810000, primes, and services one offload per loop.
-- **Build wired:** `third_party/sd2snes/src/Makefile` reaches the repo sources via
-  `VPATH`/`EXTRAINCDIRS` (vendored tree otherwise untouched) and adds the four
-  objects (incl. `engine/audio/audio_wav_read.c`).
+- **Build recipe** (apply in the sd2snes *submodule* `src/Makefile` — kept out of
+  the submodule so it stays upstream-clean; reaches the repo sources via VPATH):
+  ```make
+  VPATH        += ../../../firmware/audio ../../../engine/audio
+  EXTRAINCDIRS += ../../../firmware/audio ../../../engine ../../../engine/audio
+  SRC          += hx421_stream.c hx421_wav.c hx421_mode.c audio_wav_read.c
+  ```
+  Then `make CONFIG=config-mk3-stm32`. All four objects compile clean for the M4.
 
 **Remaining to run it:**
 1. **`main.c` hook** (John's build): in the game-run loop, next to
