@@ -516,12 +516,20 @@ set_global_assignment -name VERILOG_FILE msu.v
 set_global_assignment -name VERILOG_FILE mcu_cmd.v
 set_global_assignment -name VERILOG_FILE main.v
 set_global_assignment -name VERILOG_FILE dac.v
-# HX-421 H4a audio-seam bring-up. With HX421_AUDIO_TONE defined (below), main.v
-# swaps the MSU DAC feed for hx_tone_dac (square wave -> dac_mix -> I2S). Comment
-# out the VERILOG_MACRO line to build the plain base / H2-signature core instead.
-set_global_assignment -name VERILOG_MACRO "HX421_AUDIO_TONE=1"
+# HX-421 audio-seam bring-up. The active VERILOG_MACRO picks the DAC source in
+# main.v:  HX421_AUDIO_MIXER -> the real 8-ch mixer (hx_mixer_dac, H4b);
+#          HX421_AUDIO_TONE  -> a square-wave tone (hx_tone_dac, H4a);
+#          neither           -> the plain base / H2-signature core.
+set_global_assignment -name VERILOG_MACRO "HX421_AUDIO_MIXER=1"
 set_global_assignment -name VERILOG_FILE dac_mix.v
 set_global_assignment -name VERILOG_FILE hx_tone_dac.v
+set_global_assignment -name VERILOG_FILE hx_mixer_dac.v
+set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_mixer_seq.v
+set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_produce.v
+set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_cubic.v
+set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_lerp.v
+set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_scale.v
+set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_finalize.v
 set_global_assignment -name VERILOG_FILE clk_test.v
 set_global_assignment -name VERILOG_FILE cheat.v
 set_global_assignment -name VERILOG_FILE bsx.v

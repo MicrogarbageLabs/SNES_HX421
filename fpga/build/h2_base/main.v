@@ -421,7 +421,25 @@ sd_dma snes_sd_dma(
 
 assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 
-`ifdef HX421_AUDIO_TONE
+`ifdef HX421_AUDIO_MIXER
+// ---- HX-421 H4b: the real 8-channel mixer to the DAC ---------------------
+// hx_mixer_dac loops a baked sine through hx_mixer_seq into dac_mix, synced to
+// the DAC's own 44.1 kHz tick. Hears the actual mixer engine on hardware.
+wire [7:0] hx_dbg_tick, hx_dbg_2, hx_dbg_sdout, hx_dbg_status;
+hx_mixer_dac snes_dac(
+  .clkin(CLK2),
+  .sysclk(SNES_SYSCLK),
+  .palmode(dac_palmode_out),
+  .sdout(DAC_SDOUT),
+  .mclk_out(DAC_MCLK),
+  .lrck_out(DAC_LRCK),
+  .dbg_tick(hx_dbg_tick),
+  .dbg_mix(hx_dbg_2),
+  .dbg_sdout(hx_dbg_sdout),
+  .dbg_status(hx_dbg_status)
+);
+assign DAC_STATUS = 1'b0;
+`elsif HX421_AUDIO_TONE
 // ---- HX-421 H4a: audio-seam bring-up ------------------------------------
 // Replace the MSU DAC feed with a standalone square-wave tone through the
 // proven CIC/I2S back half (dac_mix). Proves our sample source reaches the
@@ -429,7 +447,7 @@ assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 // still boots and answers the H2 signature read, so one flash tests both:
 //   signature present + tone audible = core loaded AND audio seam works.
 // dac_addr / SD_DMA_* / msu_* stay driven elsewhere; they are simply unused here.
-wire [7:0] hx_dbg_tick, hx_dbg_tone, hx_dbg_sdout, hx_dbg_status;
+wire [7:0] hx_dbg_tick, hx_dbg_2, hx_dbg_sdout, hx_dbg_status;
 hx_tone_dac snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
@@ -438,7 +456,7 @@ hx_tone_dac snes_dac(
   .mclk_out(DAC_MCLK),
   .lrck_out(DAC_LRCK),
   .dbg_tick(hx_dbg_tick),
-  .dbg_tone(hx_dbg_tone),
+  .dbg_tone(hx_dbg_2),
   .dbg_sdout(hx_dbg_sdout),
   .dbg_status(hx_dbg_status)
 );
@@ -842,8 +860,14 @@ end
 //  Bank $3F is chosen so the FXPak menu (a low-bank LoROM) never sees it.
 //  Placed at the TOP of the read priority chain so nothing overrides it.
 // ============================================================
+`ifdef HX421_AUDIO_MIXER
+`define HX421_DIAG_WINDOW 1
+`endif
 `ifdef HX421_AUDIO_TONE
-// H4a: 8-byte window $3F:F000-F007. F000-F003 keep the signature; F004-F007
+`define HX421_DIAG_WINDOW 1
+`endif
+`ifdef HX421_DIAG_WINDOW
+// H4a/H4b: 8-byte window $3F:F000-F007. F000-F003 keep the signature; F004-F007
 // serve live DAC-seam diagnostics so a sealed cart can report where audio dies.
 wire HX_SIG_HIT = ~SNES_ROMSEL
                 & (SNES_ADDR[23:16] == 8'h3F)
@@ -853,7 +877,7 @@ wire [7:0] HX_SIG_DATA = (SNES_ADDR[2:0] == 3'd0) ? 8'h48          // 'H'
                        : (SNES_ADDR[2:0] == 3'd2) ? 8'h34          // '4'
                        : (SNES_ADDR[2:0] == 3'd3) ? 8'h32          // '2'
                        : (SNES_ADDR[2:0] == 3'd4) ? hx_dbg_tick    // sample-tick count
-                       : (SNES_ADDR[2:0] == 3'd5) ? hx_dbg_tone    // tone-edge count
+                       : (SNES_ADDR[2:0] == 3'd5) ? hx_dbg_2       // tone-edge / mix-frame count
                        : (SNES_ADDR[2:0] == 3'd6) ? hx_dbg_sdout   // sdout-edge count
                        :                            hx_dbg_status; // sticky evidence bits
 `else

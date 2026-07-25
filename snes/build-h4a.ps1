@@ -37,10 +37,14 @@ if (-not (Test-Path $rbf)) {
 $rbfAge = (Get-Date) - (Get-Item $rbf).LastWriteTime
 Step ("using main.rbf ({0:N0} bytes, built {1:N0} min ago)" -f (Get-Item $rbf).Length, $rbfAge.TotalMinutes)
 
-# Confirm the tone macro is actually enabled in the project that produced it.
+# Confirm an audio macro is actually enabled in the project that produced it.
 $qsf = Get-Content (Join-Path $repo "fpga\build\h2_base\main.qsf") -Raw
-if ($qsf -notmatch 'VERILOG_MACRO\s+"HX421_AUDIO_TONE') {
-    Warn "HX421_AUDIO_TONE is NOT set in main.qsf - this rbf may be the plain base core (no tone)."
+if ($qsf -match 'VERILOG_MACRO\s+"HX421_AUDIO_MIXER') {
+    Step "audio build: HX421_AUDIO_MIXER (real 8-ch mixer -> sine, H4b)"
+} elseif ($qsf -match 'VERILOG_MACRO\s+"HX421_AUDIO_TONE') {
+    Step "audio build: HX421_AUDIO_TONE (square wave, H4a)"
+} else {
+    Warn "no HX421_AUDIO_* macro set in main.qsf - this rbf may be the plain base core (no audio test)."
 }
 
 $packer = Join-Path $out "rlepack.exe"

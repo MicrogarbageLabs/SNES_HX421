@@ -165,6 +165,25 @@ else {
     }
 }
 
+# 9. audio path (H4b): the REAL mixer -> dac_mix -> I2S, playing a baked sine.
+#    Self-checking: config FSM completes, mixer produces frames, and the sample
+#    handed to the DAC is a full-amplitude sine at the expected pitch.
+Step "audio path: real mixer through dac_mix (H4b)"
+Copy-Item (Join-Path $h2base "sine128.hex") (Join-Path $work "sine128.hex") -Force
+& iverilog -g2012 -o tb_mixer_dac.vvp `
+    (Join-Path $h2base "hx_mixer_dac.v") (Join-Path $h2base "dac_mix.v") `
+    (Join-Path $mixer "hx_mixer_seq.v") (Join-Path $mixer "hx_produce.v") `
+    (Join-Path $mixer "hx_cubic.v") (Join-Path $mixer "hx_lerp.v") `
+    (Join-Path $mixer "hx_scale.v") (Join-Path $mixer "hx_finalize.v") (Join-Path $here "tb_mixer_dac.v")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "tb_mixer_dac compile FAILED" -ForegroundColor Red }
+else {
+    & vvp tb_mixer_dac.vvp | Where-Object { $_ -match "mixer-dac:|^RESULT|^FAIL" } | ForEach-Object {
+        if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+        elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^FAIL") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+        else { Write-Host $_ }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

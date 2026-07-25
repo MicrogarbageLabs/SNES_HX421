@@ -7,16 +7,18 @@
 //  (interp_cubic_q15/interp_linear_q15 + q15_sat_mul); only the timing changes,
 //  so the same co-sim re-verifies the mixer bit-for-bit.
 //
-//  Fixed latency LAT = 7 from `load` to `dvalid`. The sequencer feeds one
-//  channel, waits LAT, then accumulates — which is free given the mixer uses
-//  ~112 of 2177 cycles/frame.
+//  Fixed latency LAT = 8 from `load` to `dvalid`. The sequencer is latency-
+//  agnostic (it waits on `dvalid`, not a hard count), so this cost is free given
+//  the mixer uses ~190 of 2177 cycles/frame.
 //
 //  Stages (register at end of each):
 //    0 load:  latch inputs
 //    1 c_t2 = (t*t)>>15 ; coeffs a,b,c,d ; lerp scaled = (diff*f)>>16
 //    2 c_t3 = (t2*t)>>15
 //    3 products (a*t3)>>15, (b*t2)>>15, (c*t)>>15
-//    4 cub = sat((sum)>>1) ; lin = p0 + scaled ; -> s_raw = cubic ? cub : lin
+//    3b sums: cubsum = at3+bt2+cct+d ; linsum = p0+scaled  (isolate the 4-way
+//        add — it plus sat+mux in one cycle was the 96 MHz critical path in-context)
+//    4 cub = sat(cubsum>>1) ; lin = linsum ; -> s_raw = cubic ? cub : lin
 //    5 sv  = (vol==ONE) ? s_raw : sat_mul(s_raw,vol)
 //    6 samp_l/r = per-side pan with unity bypass
 //
@@ -45,9 +47,9 @@ module hx_produce (
         satmul = sat16(($signed(a) * $signed(b)) >>> 15);
     endfunction
 
-    // valid pipeline
-    reg [6:0] vpipe;
-    always @(posedge clk) vpipe <= {vpipe[5:0], load};
+    // valid pipeline (LAT = 8)
+    reg [7:0] vpipe;
+    always @(posedge clk) vpipe <= {vpipe[6:0], load};
 
     // ---- stage 0 -> 1 : inputs registered as s1_* ----
     reg signed [15:0] s1_p0, s1_p1, s1_vol, s1_pl, s1_pr;
@@ -92,15 +94,23 @@ module hx_produce (
         s3_cct <= (s2_c * s2_t)  >>> 15;
     end
 
-    // ---- stage 3 -> 4 : cubic finish, lerp finish, select ----
-    reg signed [15:0] s4_raw, s4_vol, s4_pl, s4_pr;
-    wire signed [31:0] cub_sum = s3_at3 + s3_bt2 + s3_cct + s3_d;
-    wire signed [15:0] cub_o = sat16(cub_sum >>> 1);
-    wire signed [31:0] lin_sum = $signed(s3_p0) + s3_scaled;   // p0 + scaled
-    wire signed [15:0] lin_o = lin_sum[15:0];
+    // ---- stage 3 -> 3b : the two 32-bit sums (isolated from sat+mux) ----
+    reg signed [15:0] s3b_vol, s3b_pl, s3b_pr;
+    reg        s3b_cubic;
+    reg signed [31:0] s3b_cubsum, s3b_linsum;
     always @(posedge clk) begin
-        s4_vol<=s3_vol; s4_pl<=s3_pl; s4_pr<=s3_pr;
-        s4_raw <= s3_cubic ? cub_o : lin_o;
+        s3b_vol<=s3_vol; s3b_pl<=s3_pl; s3b_pr<=s3_pr; s3b_cubic<=s3_cubic;
+        s3b_cubsum <= s3_at3 + s3_bt2 + s3_cct + s3_d;
+        s3b_linsum <= $signed(s3_p0) + s3_scaled;    // p0 + scaled
+    end
+
+    // ---- stage 3b -> 4 : cubic saturate, lerp truncate, select ----
+    reg signed [15:0] s4_raw, s4_vol, s4_pl, s4_pr;
+    wire signed [15:0] cub_o = sat16(s3b_cubsum >>> 1);
+    wire signed [15:0] lin_o = s3b_linsum[15:0];
+    always @(posedge clk) begin
+        s4_vol<=s3b_vol; s4_pl<=s3b_pl; s4_pr<=s3b_pr;
+        s4_raw <= s3b_cubic ? cub_o : lin_o;
     end
 
     // ---- stage 4 -> 5 : volume ----
@@ -114,7 +124,7 @@ module hx_produce (
     always @(posedge clk) begin
         samp_l <= (s5_pl == Q15_ONE) ? s5_sv : satmul(s5_sv, s5_pl);
         samp_r <= (s5_pr == Q15_ONE) ? s5_sv : satmul(s5_sv, s5_pr);
-        dvalid <= vpipe[6];
+        dvalid <= vpipe[7];
     end
 
 endmodule
