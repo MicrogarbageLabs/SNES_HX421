@@ -127,8 +127,8 @@ apu_prog:
         .byte $2F,$FE
 apu_prog_end:
 
-str_title:  .byte "HX421 6b.1b PSRAM SINE", 0
-str_hint:   .byte "MIXER READS WAVETABLE FROM PSRAM", 0
+str_title:  .byte "HX421 6b.1b", 0
+str_hint:   .byte "MIXER PLAYS SINE FROM PSRAM", 0
 
 .include "textmode.inc"
 
