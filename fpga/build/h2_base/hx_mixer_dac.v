@@ -27,6 +27,13 @@ module hx_mixer_dac(
   output sdout,
   output mclk_out,
   output lrck_out,
+  // ---- 6b: PSRAM read port (to main.v's MIX_RD ROM-bus requestor) ----
+  //  rom_rd_req/addr are the mixer's sample fetches; main.v serves them from
+  //  PSRAM and returns rom_rd_data (already byte-order-corrected) + rom_rd_ack.
+  output        rom_rd_req,
+  output [23:0] rom_rd_addr,     // mixer sample index (word units)
+  input         rom_rd_ack,
+  input  signed [15:0] rom_rd_data,
   // diagnostic bus (served at the SNES read window)
   output [7:0] dbg_tick,    // ++ each DAC sample tick
   output [7:0] dbg_mix,     // ++ each mixer frame produced (out_valid)
@@ -41,10 +48,6 @@ module hx_mixer_dac(
     if (por != 10'h3FF) por <= por + 10'd1;
     else                por_rst <= 1'b0;
   end
-
-  // ---- sine wavetable (128 x signed 16), baked into the bitstream ----
-  reg signed [15:0] wave [0:127];
-  initial $readmemh("sine128.hex", wave);
 
   // ---- DAC ----
   wire        sample_req;
@@ -61,21 +64,14 @@ module hx_mixer_dac(
     .dbg_vol_reg(dbg_vol_reg), .dbg_vol_sample(dbg_vol_sample)
   );
 
-  // ---- mixer read port -> sine BRAM (one-cycle latency) ----
+  // ---- mixer read port -> external PSRAM (via main.v MIX_RD requestor) ----
   wire        rd_req;
   wire [2:0]  rd_ch;
   wire [31:0] rd_addr;
-  reg         rd_ack;
-  reg  signed [15:0] rd_data;
-  always @(posedge clkin) begin
-    rd_ack <= 1'b0;
-    if (por_rst) begin
-      rd_ack <= 1'b0;
-    end else if (rd_req && !rd_ack) begin
-      rd_data <= wave[rd_addr[6:0]];
-      rd_ack  <= 1'b1;
-    end
-  end
+  assign rom_rd_req  = rd_req;
+  assign rom_rd_addr = rd_addr[23:0];       // sample index; main.v scales to bytes
+  wire        rd_ack  = rom_rd_ack;
+  wire signed [15:0] rd_data = rom_rd_data; // byte-order corrected in main.v
 
   // mixer outputs (declared before use in the FSM below)
   wire signed [31:0] mix_l, mix_r;

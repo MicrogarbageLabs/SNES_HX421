@@ -13,9 +13,27 @@ module tb_mixer_dac;
   wire sdout, mclk_out, lrck_out;
   wire [7:0] dbg_tick, dbg_mix, dbg_sdout, dbg_status;
 
+  // mock PSRAM on the mixer's external read port: a 128-sample sine returned
+  // one cycle after the request (models main.v's MIX_RD serving natural samples).
+  wire        rom_rd_req;
+  wire [23:0] rom_rd_addr;
+  reg         rom_rd_ack = 0;
+  reg  signed [15:0] rom_rd_data = 0;
+  reg signed [15:0] wave [0:127];
+  initial $readmemh("sine128.hex", wave);
+  always @(posedge clkin) begin
+    rom_rd_ack <= 1'b0;
+    if (rom_rd_req && !rom_rd_ack) begin
+      rom_rd_data <= wave[rom_rd_addr[6:0]];
+      rom_rd_ack  <= 1'b1;
+    end
+  end
+
   hx_mixer_dac dut(
     .clkin(clkin), .sysclk(sysclk), .palmode(1'b0),
     .sdout(sdout), .mclk_out(mclk_out), .lrck_out(lrck_out),
+    .rom_rd_req(rom_rd_req), .rom_rd_addr(rom_rd_addr),
+    .rom_rd_ack(rom_rd_ack), .rom_rd_data(rom_rd_data),
     .dbg_tick(dbg_tick), .dbg_mix(dbg_mix), .dbg_sdout(dbg_sdout), .dbg_status(dbg_status)
   );
 

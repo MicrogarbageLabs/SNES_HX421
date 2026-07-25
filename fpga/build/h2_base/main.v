@@ -431,10 +431,14 @@ sd_dma snes_sd_dma(
 assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 
 `ifdef HX421_AUDIO_MIXER
-// ---- HX-421 H4b: the real 8-channel mixer to the DAC ---------------------
-// hx_mixer_dac loops a baked sine through hx_mixer_seq into dac_mix, synced to
-// the DAC's own 44.1 kHz tick. Hears the actual mixer engine on hardware.
+// ---- HX-421 6b.1b: the mixer sources its wavetable from PSRAM -------------
+// hx_mixer_dac's read port drives the MIX_RD ROM-bus requestor (below); the
+// sine lives in the ROM image at MIX_WAVE_BASE, so the mixer plays it FROM PSRAM.
 wire [7:0] hx_dbg_tick, hx_dbg_2, hx_dbg_sdout, hx_dbg_status;
+wire        mix_rom_rd_req;
+wire [23:0] mix_rom_rd_addr;
+wire        mix_rom_rd_ack;
+wire signed [15:0] mix_rom_rd_data;
 hx_mixer_dac snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
@@ -442,6 +446,10 @@ hx_mixer_dac snes_dac(
   .sdout(DAC_SDOUT),
   .mclk_out(DAC_MCLK),
   .lrck_out(DAC_LRCK),
+  .rom_rd_req(mix_rom_rd_req),
+  .rom_rd_addr(mix_rom_rd_addr),
+  .rom_rd_ack(mix_rom_rd_ack),
+  .rom_rd_data(mix_rom_rd_data),
   .dbg_tick(hx_dbg_tick),
   .dbg_mix(hx_dbg_2),
   .dbg_sdout(hx_dbg_sdout),
@@ -1103,27 +1111,31 @@ always @(posedge CLK2) begin
   end
 end
 
-// 6b.1a: mixer ROM-read requestor (diagnostic PROBE). Free-running: reads a fixed
-// ROM/PSRAM location repeatedly over the SNES ROM bus, lowest priority, free_slot-
-// gated exactly like MCU/DMA/CTX. Exposes the read value + a read counter via the
-// diagnostic window to verify the STATE-machine integration ON HARDWARE (the port
-// cannot be elaborated in sim; the pattern was proven in hx_rom_arb + tb_rom_arb).
+// 6b.1b: mixer ROM-read requestor, now DRIVEN BY THE MIXER (not a free-running
+// probe). The mixer's held rd_req latches one read; the STATE machine serves it
+// on a free_strobe (non-ROM) cycle, lowest priority; the byte-swapped 16-bit word
+// goes back to the mixer. The wavetable lives at MIX_WAVE_BASE in the ROM image
+// (raw PSRAM byte addr == ROM file offset, LINEAR load), so the mixer plays it
+// FROM PSRAM. Sample index -> byte addr = base + index*2. Byte-swap: ROM_DATA has
+// the even byte in [15:8]; ca65 stores samples little-endian, so swap for natural.
 `ifdef HX421_AUDIO_MIXER
-localparam [23:0] MIX_PROBE_ADDR = 24'h001000;   // ROM byte offset probed
+localparam [23:0] MIX_WAVE_BASE = 24'h002000;   // ROM file offset of the sine
 reg        MIX_RD_PENDr  = 1'b0;
 reg [15:0] MIX_DINr      = 16'd0;
 reg [23:0] MIX_ROM_ADDRr = 24'd0;
 reg [7:0]  MIX_RD_CNTr   = 8'd0;
 wire       MIX_HIT = (STATE == ST_MIX_RD_ADDR) | (STATE == ST_MIX_RD_END);
 always @(posedge CLK2) begin
-  if(~MIX_RD_PENDr) begin
+  if(mix_rom_rd_req & ~MIX_RD_PENDr) begin
     MIX_RD_PENDr  <= 1'b1;
-    MIX_ROM_ADDRr <= MIX_PROBE_ADDR;
+    MIX_ROM_ADDRr <= MIX_WAVE_BASE + {mix_rom_rd_addr[22:0], 1'b0};
   end else if(STATE == ST_MIX_RD_END) begin
     MIX_RD_PENDr <= 1'b0;
     MIX_RD_CNTr  <= MIX_RD_CNTr + 8'd1;
   end
 end
+assign mix_rom_rd_ack  = (STATE == ST_MIX_RD_END);
+assign mix_rom_rd_data = {MIX_DINr[7:0], MIX_DINr[15:8]};
 `else
 wire        MIX_HIT = 1'b0;
 wire [23:0] MIX_ROM_ADDRr = 24'd0;
