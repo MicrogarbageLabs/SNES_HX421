@@ -1175,7 +1175,13 @@ always @(posedge CLK2) begin
           ST_MEM_DELAYr <= ROM_CYCLE_LEN;
         end
 `ifdef HX421_AUDIO_MIXER
-        else if(MIX_RD_PENDr) begin          // 6b: mixer read, lowest priority
+        // 6b: mixer read, lowest priority, and ONLY on free_strobe — a SNES cycle
+        // that doesn't touch ROM (~ROM_HIT), so the whole cycle's bus is free and
+        // the read can never delay the PSRAM settling for a SNES ROM access.
+        // (SNES_cycle_end slots run into the next cycle's ROM read; unlike the
+        //  bursty MCU/DMA/CTX requestors, a CONTINUOUS mixer reader on those
+        //  corrupts SNES reads — seen as garbled tiles on real hardware.)
+        else if(MIX_RD_PENDr & free_strobe) begin
           STATE <= ST_MIX_RD_ADDR;
           ST_MEM_DELAYr <= ROM_CYCLE_LEN;
         end
