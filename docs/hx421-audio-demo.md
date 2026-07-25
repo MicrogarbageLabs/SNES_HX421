@@ -113,6 +113,36 @@ so the normal firmware path is untouched (like every prior HX bring-up).
 - **A4 — FFT.** Capture window + `audio_fft` + sprite bars.
 - **Measure.** STM32 `.map` + runtime high-water → SRAM headroom for the rest.
 
+## STM32 firmware integration — BUILT (2026-07-25)
+The M4-side pieces are written and **compile clean for the Cortex-M4** against the
+real mk3 firmware headers (`arm-none-eabi-gcc -mcpu=cortex-m4`):
+- `firmware/audio/hx421_stream.{c,h}` — the arbiter (host-tested).
+- `firmware/audio/hx421_wav.{c,h}` — streaming WAV header parse (host-tested).
+- `firmware/audio/hx421_mode.{c,h}` — the firmware glue. Binds the arbiter to the
+  platform seams: SD-DMA offload SD→PSRAM (`set_mcu_addr` + `ff_sd_offload` +
+  `sd_offload_tgt=0` + `f_read`), joystick input (`snes_get_snes_cmd`), and a
+  drain pointer (time-estimated at 44.1 kHz until the FPGA exposes the mixer's
+  real read position). Opens `music1.wav`/`music2.wav`, parses, lays out two 64 KB
+  PSRAM rings at 0x800000/0x810000, primes, and services one offload per loop.
+- **Build wired:** `third_party/sd2snes/src/Makefile` reaches the repo sources via
+  `VPATH`/`EXTRAINCDIRS` (vendored tree otherwise untouched) and adds the four
+  objects (incl. `engine/audio/audio_wav_read.c`).
+
+**Remaining to run it:**
+1. **`main.c` hook** (John's build): in the game-run loop, next to
+   `if(romprops.has_msu1){ while(!msu1_loop()); … }`, add
+   `if(<hx421 detected>){ if(!hx421_mode_init()) while(!hx421_mode_loop());
+   prepare_reset(); continue; }`. Detection is a choice — a magic in the ROM
+   header/title, a filename, or a new `romprops` flag.
+2. **FPGA pairing (the mixer must actually read the rings):** extend 6b.1b's
+   MIX_RD so the mixer channel reads from a runtime-set ring base with
+   `loop_len = ring_size/2`, and **expose the channel's read position** to the MCU
+   via an SPI status read (replaces the time-estimated drain). Then the streamed
+   samples become sound. 6b.1a/6b.1b prove the read path; this adds ring config +
+   drain reporting.
+3. **FFT + input protocol** (A4 / joystick): CMSIS-DSP `arm_rfft_q15`, the post-mix
+   capture read-back, and the SNES-ROM→snescmd button map.
+
 ## Sequencing note
 This "STM32 first" task and 6b are coupled: A1 already needs the mixer reading a
 PSRAM ring (6b core) and the drain-pointer status. The STM32 arbiter, WAV parse,
