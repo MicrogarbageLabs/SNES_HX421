@@ -516,6 +516,12 @@ set_global_assignment -name VERILOG_FILE msu.v
 set_global_assignment -name VERILOG_FILE mcu_cmd.v
 set_global_assignment -name VERILOG_FILE main.v
 set_global_assignment -name VERILOG_FILE dac.v
+# HX-421 H4a audio-seam bring-up. With HX421_AUDIO_TONE defined (below), main.v
+# swaps the MSU DAC feed for hx_tone_dac (square wave -> dac_mix -> I2S). Comment
+# out the VERILOG_MACRO line to build the plain base / H2-signature core instead.
+set_global_assignment -name VERILOG_MACRO "HX421_AUDIO_TONE=1"
+set_global_assignment -name VERILOG_FILE dac_mix.v
+set_global_assignment -name VERILOG_FILE hx_tone_dac.v
 set_global_assignment -name VERILOG_FILE clk_test.v
 set_global_assignment -name VERILOG_FILE cheat.v
 set_global_assignment -name VERILOG_FILE bsx.v

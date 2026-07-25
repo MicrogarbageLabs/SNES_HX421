@@ -148,6 +148,23 @@ else {
     }
 }
 
+# 8. audio SEAM (H4a): tone -> dac_mix -> I2S. Not a golden-vector co-sim (there
+#    is no C reference for the DAC); a self-checking plumbing test that our sample
+#    source reaches the I2S output standalone (no MSU). Guards the seam wiring.
+Step "audio seam: tone through dac_mix to I2S (H4a bring-up)"
+$fpga = Split-Path -Parent (Split-Path -Parent $mixer)   # ...\fpga
+$h2base = Join-Path $fpga "build\h2_base"
+& iverilog -g2012 -o tb_tone_dac.vvp `
+    (Join-Path $h2base "hx_tone_dac.v") (Join-Path $h2base "dac_mix.v") (Join-Path $here "tb_tone_dac.v")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "tb_tone_dac compile FAILED" -ForegroundColor Red }
+else {
+    & vvp tb_tone_dac.vvp | Where-Object { $_ -match "seam:|^RESULT|^FAIL" } | ForEach-Object {
+        if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+        elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^FAIL") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+        else { Write-Host $_ }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }

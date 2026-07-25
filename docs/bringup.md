@@ -297,6 +297,34 @@ core and nothing like `mini`'s 55 KB.
   known-good `base` fork to grow from.
 - **H4** — the audio path: `fpga/cores/mixer_out` against the C mixer reference in `engine/`.
 
+## Milestone H4a — "the audio seam carries a signal" (tone core)
+
+The 8-channel mixer is proven bit-exact and timing-closed entirely in sim (`docs/audio-fpga-mixer.md`).
+What is NOT yet proven is the *seam*: does a sample our logic produces actually reach the cart's audio
+output on real silicon? The FXPak's MSU-1 DAC back half (`dac.v` — a CIC interpolator + I2S serializer
++ a master-locked 44.1 kHz phase accumulator) is known-good, so the smallest first step swaps only the
+DAC's *sample source*, nothing else:
+
+- `dac_mix.v` — `dac.v` verbatim except `dac_data` comes from a direct `sample_in` latched on the
+  44.1 kHz tick (`sample_req`), instead of from the `dac_buf` ring the MSU fills.
+- `hx_tone_dac.v` — a power-up reset + a loud 441 Hz square wave into `dac_mix`, `play=1`, full volume.
+- `main.v` — under `` `ifdef HX421_AUDIO_TONE `` (set in `main.qsf`), the MSU `dac` instance is
+  replaced by `hx_tone_dac`. The H2 signature stays, so **one flash tests both**: signature present ⇒
+  core loaded; tone audible ⇒ seam works.
+
+Verified in sim first (`fpga/cores/mixer/sim/tb_tone_dac.v`, Icarus): standalone `sample_req` ticks at
+44102.6 Hz (want 44100), the tone toggles at 441.0 Hz, and `sdout`/`lrck` carry live I2S activity — so
+the phase accumulator runs without the MSU and our sample reaches I2S. A tone through a sealed cart is
+un-scopable, so sim is the only pre-hardware check; the ear is the hardware check.
+
+Build + deploy: `cd fpga\build\h2_base; quartus_sh --flow compile main` then `.\snes\build-h4a.ps1`
+(packs `output_files/main.rbf` → `fpga_obc1.bi3`). Run the existing `h2_probe.sfc`. Expect the H2
+signature on screen AND a steady tone. **Comment out the `HX421_AUDIO_TONE` macro in `main.qsf` to
+rebuild the plain base / H2 core.**
+
+- **H4b** (next) — feed `dac_mix.sample_in` from `hx_audio_top` (the real mixer) instead of the square
+  generator, with a hardcoded one-channel wavetable scene. Then the mixer itself is heard on hardware.
+
 ## Gotcha: mgapi.dll hijacks any ROM in bsnes-plus
 
 `mgapi.dll` takes over the whole HiROM cart region **purely by existing next to `bsnes.exe`** —

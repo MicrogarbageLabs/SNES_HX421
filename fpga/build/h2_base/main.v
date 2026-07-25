@@ -421,6 +421,24 @@ sd_dma snes_sd_dma(
 
 assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 
+`ifdef HX421_AUDIO_TONE
+// ---- HX-421 H4a: audio-seam bring-up ------------------------------------
+// Replace the MSU DAC feed with a standalone square-wave tone through the
+// proven CIC/I2S back half (dac_mix). Proves our sample source reaches the
+// cart audio output on real hardware, independent of SNES/MSU/PSRAM. The core
+// still boots and answers the H2 signature read, so one flash tests both:
+//   signature present + tone audible = core loaded AND audio seam works.
+// dac_addr / SD_DMA_* / msu_* stay driven elsewhere; they are simply unused here.
+hx_tone_dac snes_dac(
+  .clkin(CLK2),
+  .sysclk(SNES_SYSCLK),
+  .palmode(dac_palmode_out),
+  .sdout(DAC_SDOUT),
+  .mclk_out(DAC_MCLK),
+  .lrck_out(DAC_LRCK)
+);
+assign DAC_STATUS = 1'b0;
+`else
 dac snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
@@ -439,6 +457,7 @@ dac snes_dac(
   .reset(dac_reset),
   .dac_address_ext(dac_ptr_addr)
 );
+`endif
 
 srtc snes_srtc (
   .clkin(CLK2),
