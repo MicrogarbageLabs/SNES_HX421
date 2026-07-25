@@ -31,7 +31,10 @@ module dac_mix(
   output mclk_out,
   output lrck_out,
   output sclk_out,
-  output DAC_STATUS
+  output DAC_STATUS,
+  // ---- H4a hardware-diagnostic taps (no functional effect) ----
+  output [10:0] dbg_vol_reg,      // the ramped volume (0 -> target)
+  output signed [15:0] dbg_vol_sample  // the value handed to the I2S shifter
 );
 
 reg[8:0] dac_address_r;
@@ -252,5 +255,9 @@ always @(posedge clkin) begin
     end
   end
 end
+
+// ---- diagnostic taps ----
+assign dbg_vol_reg    = vol_reg;
+assign dbg_vol_sample = vol_sample_sat;
 
 endmodule

@@ -9,8 +9,14 @@
 //  sample source reach the I2S DAC?) from the mixer (does it compute the right
 //  samples?, already proven bit-exact in sim).
 //
-//  Once a tone is heard, the same seam takes hx_audio_top's output instead of the
-//  square generator -- that is H4b.
+//  DIAGNOSTIC (H4a debug): a sealed cart can't be scoped, so this module also
+//  exports live counters + sticky "this stage fired" flags for each seam stage,
+//  which main.v serves through the SNES read window. One flash then tells us
+//  exactly which stage is dead on hardware:
+//     dbg_tick   - sample tick (44.1 kHz comb_strobe) firing -> phase acc + sysclk
+//     dbg_tone   - tone_sign toggling                        -> generator advancing
+//     dbg_sdout  - sdout edges                               -> I2S serializing data
+//     dbg_status - sticky evidence bits + volume-ramped flag
 //
 //  Public domain (CC0). No warranty.
 //////////////////////////////////////////////////////////////////////////////////
@@ -21,7 +27,12 @@ module hx_tone_dac(
   input  palmode,     // 0 = NTSC (44.1 kHz), 1 = PAL
   output sdout,
   output mclk_out,
-  output lrck_out
+  output lrck_out,
+  // ---- diagnostic bus (served at the SNES read window; no functional effect) ----
+  output [7:0] dbg_tick,    // ++ each 44.1 kHz sample tick
+  output [7:0] dbg_tone,    // ++ each tone half-period (square edge)
+  output [7:0] dbg_sdout,   // ++ each sdout transition
+  output [7:0] dbg_status   // {3'b0, vol_ramped, smp_nz, sdout_seen, tone_seen, tick_seen}
 );
 
   // Power-up reset: hold the DAC (CIC state, phase accumulator) in reset for the
@@ -61,6 +72,9 @@ module hx_tone_dac(
   wire signed [15:0] tone_samp = tone_sign ? $signed(TONE_AMP)
                                            : -$signed(TONE_AMP);
 
+  wire [10:0]        dac_vol_reg;
+  wire signed [15:0] dac_vol_sample;
+
   // Same sample on both channels (mono tone).
   dac_mix u_dac(
     .clkin(clkin),
@@ -78,7 +92,32 @@ module hx_tone_dac(
     .mclk_out(mclk_out),
     .lrck_out(lrck_out),
     .sclk_out(),
-    .DAC_STATUS()
+    .DAC_STATUS(),
+    .dbg_vol_reg(dac_vol_reg),
+    .dbg_vol_sample(dac_vol_sample)
   );
+
+  // ---- diagnostic counters + sticky evidence flags ----
+  reg [7:0] tick_cnt  = 8'd0;
+  reg [7:0] tone_ecnt = 8'd0;
+  reg [7:0] sdout_cnt = 8'd0;
+  reg       tick_seen = 1'b0, tone_seen = 1'b0, sdout_seen = 1'b0;
+  reg       smp_nz = 1'b0, vol_ramped = 1'b0;
+  reg       sign_d = 1'b0, sdout_d = 1'b0;
+
+  always @(posedge clkin) begin
+    sign_d  <= tone_sign;
+    sdout_d <= sdout;
+    if (sample_req)          begin tick_cnt  <= tick_cnt  + 8'd1; tick_seen  <= 1'b1; end
+    if (tone_sign !== sign_d) begin tone_ecnt <= tone_ecnt + 8'd1; tone_seen  <= 1'b1; end
+    if (sdout   !== sdout_d)  begin sdout_cnt <= sdout_cnt + 8'd1; sdout_seen <= 1'b1; end
+    if (dac_vol_sample != 16'sd0) smp_nz     <= 1'b1;
+    if (dac_vol_reg >= 11'd200)   vol_ramped <= 1'b1;
+  end
+
+  assign dbg_tick   = tick_cnt;
+  assign dbg_tone   = tone_ecnt;
+  assign dbg_sdout  = sdout_cnt;
+  assign dbg_status = {3'b000, vol_ramped, smp_nz, sdout_seen, tone_seen, tick_seen};
 
 endmodule
