@@ -387,12 +387,21 @@ parameter ST_DMA_RD_ADDR = 11'b00010000000;
 parameter ST_DMA_RD_END  = 11'b00100000000;
 parameter ST_DMA_WR_ADDR = 11'b01000000000;
 parameter ST_DMA_WR_END  = 11'b10000000000;
+`ifdef HX421_AUDIO_MIXER
+// 6b: the mixer as a fifth ROM-bus requestor (two new one-hot states, bits 11-12).
+// Sim-gated in fpga/cores/mixer/{hx_rom_arb.v,sim/tb_rom_arb.v}: safe (never drives
+// ROM_ADDR during a SNES access), correct, non-starving — same free_slot/ROM_CYCLE_LEN
+// gating as the proven MCU/DMA/CTX requestors.
+parameter ST_MIX_RD_ADDR = 13'b0100000000000;
+parameter ST_MIX_RD_END  = 13'b1000000000000;
+`endif
 
 parameter SNES_DEAD_TIMEOUT = 17'd96000; // 1ms
 
 parameter ROM_CYCLE_LEN = 4'd7;
 
-reg [10:0] STATE;
+reg [12:0] STATE;   // widened 11->13 for the 6b ST_MIX_RD_* states (upper 2 bits
+                    // unused unless HX421_AUDIO_MIXER; harmless in other builds)
 initial STATE = ST_IDLE;
 
 assign SRTC_SNES_DATA_IN = BUS_DATA[3:0];
@@ -867,19 +876,25 @@ end
 `define HX421_DIAG_WINDOW 1
 `endif
 `ifdef HX421_DIAG_WINDOW
-// H4a/H4b: 8-byte window $3F:F000-F007. F000-F003 keep the signature; F004-F007
-// serve live DAC-seam diagnostics so a sealed cart can report where audio dies.
+// 16-byte window $3F:F000-F00F. F000-F003 signature; F004-F007 DAC-seam
+// diagnostics; F008-F00A (mixer build) the 6b PSRAM-probe read value + count.
 wire HX_SIG_HIT = ~SNES_ROMSEL
                 & (SNES_ADDR[23:16] == 8'h3F)
-                & (SNES_ADDR[15:3]  == 13'h1E00);
-wire [7:0] HX_SIG_DATA = (SNES_ADDR[2:0] == 3'd0) ? 8'h48          // 'H'
-                       : (SNES_ADDR[2:0] == 3'd1) ? 8'h58          // 'X'
-                       : (SNES_ADDR[2:0] == 3'd2) ? 8'h34          // '4'
-                       : (SNES_ADDR[2:0] == 3'd3) ? 8'h32          // '2'
-                       : (SNES_ADDR[2:0] == 3'd4) ? hx_dbg_tick    // sample-tick count
-                       : (SNES_ADDR[2:0] == 3'd5) ? hx_dbg_2       // tone-edge / mix-frame count
-                       : (SNES_ADDR[2:0] == 3'd6) ? hx_dbg_sdout   // sdout-edge count
-                       :                            hx_dbg_status; // sticky evidence bits
+                & (SNES_ADDR[15:4]  == 12'h0F00);
+wire [7:0] HX_SIG_DATA = (SNES_ADDR[3:0] == 4'd0) ? 8'h48          // 'H'
+                       : (SNES_ADDR[3:0] == 4'd1) ? 8'h58          // 'X'
+                       : (SNES_ADDR[3:0] == 4'd2) ? 8'h34          // '4'
+                       : (SNES_ADDR[3:0] == 4'd3) ? 8'h32          // '2'
+                       : (SNES_ADDR[3:0] == 4'd4) ? hx_dbg_tick    // sample-tick count
+                       : (SNES_ADDR[3:0] == 4'd5) ? hx_dbg_2       // tone-edge / mix-frame count
+                       : (SNES_ADDR[3:0] == 4'd6) ? hx_dbg_sdout   // sdout-edge count
+`ifdef HX421_AUDIO_MIXER
+                       : (SNES_ADDR[3:0] == 4'd8) ? MIX_DINr[7:0]  // 6b probe read, low byte
+                       : (SNES_ADDR[3:0] == 4'd9) ? MIX_DINr[15:8] // 6b probe read, high byte
+                       : (SNES_ADDR[3:0] == 4'd10)? MIX_RD_CNTr    // 6b probe read counter
+`endif
+                       : (SNES_ADDR[3:0] == 4'd7) ? hx_dbg_status  // sticky evidence bits
+                       :                            8'h00;
 `else
 wire HX_SIG_HIT = ~SNES_ROMSEL
                 & (SNES_ADDR[23:16] == 8'h3F)
@@ -1001,9 +1016,14 @@ pll snes_pll(
 );
 
 wire ROM_ADDR22;
-assign ROM_ADDR22 = (SD_DMA_TO_ROM) ? MCU_ADDR[1]    : CTX_HIT ? CTX_ROM_ADDRr[1]    : DMA_HIT ? DMA_ROM_ADDRr[1]    : MCU_HIT ? ROM_ADDRr[1]    : MAPPED_SNES_ADDR[1];
-assign ROM_ADDR   = (SD_DMA_TO_ROM) ? MCU_ADDR[23:2] : CTX_HIT ? CTX_ROM_ADDRr[23:2] : DMA_HIT ? DMA_ROM_ADDRr[23:2] : MCU_HIT ? ROM_ADDRr[23:2] : MAPPED_SNES_ADDR[23:2];
-assign ROM_ADDR0  = (SD_DMA_TO_ROM) ? MCU_ADDR[0]    : CTX_HIT ? CTX_ROM_ADDRr[0]    : DMA_HIT ? DMA_ROM_ADDRr[0]    : MCU_HIT ? ROM_ADDRr[0]    : MAPPED_SNES_ADDR[0];
+// 6b: MIX_HIT (mixer ROM-read requestor active) is the LOWEST-priority entry in
+// the ROM_ADDR mux, below the SNES-serving requestors and above only the SNES
+// default. It is asserted only during ST_MIX_RD_*, entered only on free_slot, so
+// it never drives ROM_ADDR during a SNES access. Declared in both builds so the
+// mux term is always well-formed (MIX_HIT=0 when not the mixer build).
+assign ROM_ADDR22 = (SD_DMA_TO_ROM) ? MCU_ADDR[1]    : CTX_HIT ? CTX_ROM_ADDRr[1]    : DMA_HIT ? DMA_ROM_ADDRr[1]    : MCU_HIT ? ROM_ADDRr[1]    : MIX_HIT ? MIX_ROM_ADDRr[1]    : MAPPED_SNES_ADDR[1];
+assign ROM_ADDR   = (SD_DMA_TO_ROM) ? MCU_ADDR[23:2] : CTX_HIT ? CTX_ROM_ADDRr[23:2] : DMA_HIT ? DMA_ROM_ADDRr[23:2] : MCU_HIT ? ROM_ADDRr[23:2] : MIX_HIT ? MIX_ROM_ADDRr[23:2] : MAPPED_SNES_ADDR[23:2];
+assign ROM_ADDR0  = (SD_DMA_TO_ROM) ? MCU_ADDR[0]    : CTX_HIT ? CTX_ROM_ADDRr[0]    : DMA_HIT ? DMA_ROM_ADDRr[0]    : MCU_HIT ? ROM_ADDRr[0]    : MIX_HIT ? MIX_ROM_ADDRr[0]    : MAPPED_SNES_ADDR[0];
 
 
 assign ROM_ZZ = 1'b1;
@@ -1083,6 +1103,32 @@ always @(posedge CLK2) begin
   end
 end
 
+// 6b.1a: mixer ROM-read requestor (diagnostic PROBE). Free-running: reads a fixed
+// ROM/PSRAM location repeatedly over the SNES ROM bus, lowest priority, free_slot-
+// gated exactly like MCU/DMA/CTX. Exposes the read value + a read counter via the
+// diagnostic window to verify the STATE-machine integration ON HARDWARE (the port
+// cannot be elaborated in sim; the pattern was proven in hx_rom_arb + tb_rom_arb).
+`ifdef HX421_AUDIO_MIXER
+localparam [23:0] MIX_PROBE_ADDR = 24'h001000;   // ROM byte offset probed
+reg        MIX_RD_PENDr  = 1'b0;
+reg [15:0] MIX_DINr      = 16'd0;
+reg [23:0] MIX_ROM_ADDRr = 24'd0;
+reg [7:0]  MIX_RD_CNTr   = 8'd0;
+wire       MIX_HIT = (STATE == ST_MIX_RD_ADDR) | (STATE == ST_MIX_RD_END);
+always @(posedge CLK2) begin
+  if(~MIX_RD_PENDr) begin
+    MIX_RD_PENDr  <= 1'b1;
+    MIX_ROM_ADDRr <= MIX_PROBE_ADDR;
+  end else if(STATE == ST_MIX_RD_END) begin
+    MIX_RD_PENDr <= 1'b0;
+    MIX_RD_CNTr  <= MIX_RD_CNTr + 8'd1;
+  end
+end
+`else
+wire        MIX_HIT = 1'b0;
+wire [23:0] MIX_ROM_ADDRr = 24'd0;
+`endif
+
 always @(posedge CLK2) begin
   if(~SNES_CPU_CLKr[1]) SNES_DEAD_CNTr <= SNES_DEAD_CNTr + 1;
   else SNES_DEAD_CNTr <= 18'h0;
@@ -1128,6 +1174,12 @@ always @(posedge CLK2) begin
           STATE <= ST_DMA_WR_ADDR;
           ST_MEM_DELAYr <= ROM_CYCLE_LEN;
         end
+`ifdef HX421_AUDIO_MIXER
+        else if(MIX_RD_PENDr) begin          // 6b: mixer read, lowest priority
+          STATE <= ST_MIX_RD_ADDR;
+          ST_MEM_DELAYr <= ROM_CYCLE_LEN;
+        end
+`endif
       end
     end
     ST_MCU_RD_ADDR: begin
@@ -1158,6 +1210,17 @@ always @(posedge CLK2) begin
       ST_MEM_DELAYr <= ST_MEM_DELAYr - 1;
       if(ST_MEM_DELAYr == 0) STATE <= ST_DMA_WR_END;
     end
+`ifdef HX421_AUDIO_MIXER
+    ST_MIX_RD_ADDR: begin                   // 6b: mirror ST_MCU_RD_ADDR, full 16-bit capture
+      STATE <= ST_MIX_RD_ADDR;
+      ST_MEM_DELAYr <= ST_MEM_DELAYr - 1;
+      if(ST_MEM_DELAYr == 0) STATE <= ST_MIX_RD_END;
+      MIX_DINr <= ROM_DATA;                 // raw 16-bit PSRAM word (byte order verified on HW)
+    end
+    ST_MIX_RD_END: begin
+      STATE <= ST_IDLE;
+    end
+`endif
     ST_MCU_RD_END, ST_MCU_WR_END, ST_CTX_WR_END, ST_DMA_RD_END, ST_DMA_WR_END: begin
       STATE <= ST_IDLE;
     end
