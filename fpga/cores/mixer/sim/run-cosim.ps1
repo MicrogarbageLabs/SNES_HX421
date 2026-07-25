@@ -184,6 +184,21 @@ else {
     }
 }
 
+# 10. 6b ROM-bus arbiter: the mixer as a fifth PSRAM requestor sharing the SNES
+#     ROM bus. Safety (never drives the bus during a SNES access), correctness,
+#     and no-starvation, against a PSRAM model + SNES-access generator. Gates the
+#     SNES-critical main.v change before it goes near hardware.
+Step "6b ROM-bus arbiter: mixer shares the SNES ROM bus safely"
+& iverilog -g2012 -o tb_rom_arb.vvp (Join-Path $mixer "hx_rom_arb.v") (Join-Path $here "tb_rom_arb.v")
+if ($LASTEXITCODE -ne 0) { $anyfail = $true; Write-Host "tb_rom_arb compile FAILED" -ForegroundColor Red }
+else {
+    & vvp tb_rom_arb.vvp | Where-Object { $_ -match "rom-arb:|^RESULT|^FAIL" } | ForEach-Object {
+        if ($_ -match "^RESULT: PASS") { Write-Host $_ -ForegroundColor Green }
+        elseif ($_ -match "^RESULT: FAIL" -or $_ -match "^FAIL") { Write-Host $_ -ForegroundColor Red; $anyfail = $true }
+        else { Write-Host $_ }
+    }
+}
+
 Pop-Location
 if ($anyfail) { Write-Host "`nSOME DUTS FAILED" -ForegroundColor Red; exit 1 }
 else { Write-Host "`nALL MIXER STAGES BIT-EXACT" -ForegroundColor Green }
