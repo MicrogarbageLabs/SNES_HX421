@@ -24,7 +24,12 @@ module hx_mixer_dac #(
   // Loop length of channel 0, in samples. Default 128 = the baked sine. A
   // streaming/long-clip build overrides this to the ring size (e.g. 32768 for a
   // 64 KB mono ring) so the mixer wraps at the ring boundary, not every 128.
-  parameter [31:0] LOOP_LEN = 32'd128
+  parameter [31:0] LOOP_LEN = 32'd128,
+  // When 1, also configure channel 1 (same wavetable, step 1.5 = a perfect fifth
+  // above ch0) and drop both channels to half volume -> the mixer sums two tones
+  // into a chord: the first on-silicon test of actual multi-channel MIXING. When
+  // 0 (default) the FSM is byte-identical to the single-channel sine core.
+  parameter SECOND_CH = 1'b0
 )(
   input  clkin,       // CLK2, 96 MHz
   input  sysclk,      // SNES_SYSCLK
@@ -83,29 +88,45 @@ module hx_mixer_dac #(
   wire signed [31:0] mix_l, mix_r;
   wire        mix_valid, mix_busy;
 
-  // ---- config / control FSM: set up channel 0, prime, then render per tick ----
+  // ---- config / control FSM: set up channel(s), prime, then render per tick ----
+  //  Channel 0 always: step 1.0, active+loop, loop_len=LOOP_LEN. If SECOND_CH,
+  //  also channel 1 at step 1.5 (a fifth up), and both volumes drop to half so the
+  //  summed pair doesn't clip. SECOND_CH=0 -> ch1 states are skipped and ch0 keeps
+  //  full volume, so the single-channel core is unchanged.
+  localparam [15:0] CH_VOL = SECOND_CH ? 16'h4000 : 16'h7FFF;
   reg        cfg_we;
+  reg [2:0]  cfg_ch_r;
   reg [2:0]  cfg_field;
   reg [31:0] cfg_data;
   reg        mix_prime, mix_render, cfg_done;
-  reg [3:0]  cs;
+  reg [4:0]  cs;
   always @(posedge clkin) begin
     cfg_we    <= 1'b0;
     mix_prime <= 1'b0;
     if (por_rst) begin
-      cs <= 4'd0; cfg_done <= 1'b0;
+      cs <= 5'd0; cfg_done <= 1'b0; cfg_ch_r <= 3'd0;
     end else begin
       case (cs)
-        4'd0: begin cfg_field<=3'd0; cfg_data<=32'd0;          cfg_we<=1; cs<=4'd1; end // step_lo=0
-        4'd1: begin cfg_field<=3'd1; cfg_data<=32'd1;          cfg_we<=1; cs<=4'd2; end // step_hi=1 (1.0)
-        4'd2: begin cfg_field<=3'd2; cfg_data<=32'h0000000A;   cfg_we<=1; cs<=4'd3; end // flags: active+loop
-        4'd3: begin cfg_field<=3'd3; cfg_data<=32'h00007FFF;   cfg_we<=1; cs<=4'd4; end // vol max
-        4'd4: begin cfg_field<=3'd4; cfg_data<=32'h00007FFF;   cfg_we<=1; cs<=4'd5; end // pan_l max
-        4'd5: begin cfg_field<=3'd5; cfg_data<=32'h00007FFF;   cfg_we<=1; cs<=4'd6; end // pan_r max
-        4'd6: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;       cfg_we<=1; cs<=4'd7; end // loop_len (param)
-        4'd7: begin mix_prime<=1'b1;                                      cs<=4'd8; end
-        4'd8: begin if (mix_busy)  cs<=4'd9;  end                                       // prime started
-        4'd9: begin if (!mix_busy) begin cfg_done<=1'b1; cs<=4'd10; end end             // prime done
+        // ---- channel 0 ----
+        5'd0: begin cfg_ch_r<=3'd0; cfg_field<=3'd0; cfg_data<=32'd0;              cfg_we<=1; cs<=5'd1; end // step_lo=0
+        5'd1: begin cfg_field<=3'd1; cfg_data<=32'd1;                              cfg_we<=1; cs<=5'd2; end // step_hi=1 (1.0)
+        5'd2: begin cfg_field<=3'd2; cfg_data<=32'h0000000A;                       cfg_we<=1; cs<=5'd3; end // active+loop
+        5'd3: begin cfg_field<=3'd3; cfg_data<={16'd0, CH_VOL};                    cfg_we<=1; cs<=5'd4; end // vol
+        5'd4: begin cfg_field<=3'd4; cfg_data<=32'h00007FFF;                       cfg_we<=1; cs<=5'd5; end // pan_l max
+        5'd5: begin cfg_field<=3'd5; cfg_data<=32'h00007FFF;                       cfg_we<=1; cs<=5'd6; end // pan_r max
+        5'd6: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;   cfg_we<=1; cs<=(SECOND_CH ? 5'd7 : 5'd14); end   // loop_len
+        // ---- channel 1 (only if SECOND_CH): step 1.5 = ch0 + a fifth ----
+        5'd7:  begin cfg_ch_r<=3'd1; cfg_field<=3'd0; cfg_data<=32'h80000000;      cfg_we<=1; cs<=5'd8;  end // step_lo=0.5
+        5'd8:  begin cfg_field<=3'd1; cfg_data<=32'd1;                             cfg_we<=1; cs<=5'd9;  end // step_hi=1 (=>1.5)
+        5'd9:  begin cfg_field<=3'd2; cfg_data<=32'h0000000A;                      cfg_we<=1; cs<=5'd10; end // active+loop
+        5'd10: begin cfg_field<=3'd3; cfg_data<={16'd0, CH_VOL};                   cfg_we<=1; cs<=5'd11; end // vol
+        5'd11: begin cfg_field<=3'd4; cfg_data<=32'h00007FFF;                      cfg_we<=1; cs<=5'd12; end // pan_l max
+        5'd12: begin cfg_field<=3'd5; cfg_data<=32'h00007FFF;                      cfg_we<=1; cs<=5'd13; end // pan_r max
+        5'd13: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;                          cfg_we<=1; cs<=5'd14; end // loop_len
+        // ---- prime + go ----
+        5'd14: begin mix_prime<=1'b1;                                                         cs<=5'd15; end
+        5'd15: begin if (mix_busy)  cs<=5'd16;  end                                                          // prime started
+        5'd16: begin if (!mix_busy) begin cfg_done<=1'b1; cs<=5'd17; end end                                 // prime done
         default: ;
       endcase
     end
@@ -120,7 +141,7 @@ module hx_mixer_dac #(
 
   hx_mixer_seq #(.N(8), .CHW(3)) u_mix (
     .clk(clkin), .rst(por_rst),
-    .cfg_we(cfg_we), .cfg_ch(3'd0), .cfg_field(cfg_field), .cfg_data(cfg_data),
+    .cfg_we(cfg_we), .cfg_ch(cfg_ch_r), .cfg_field(cfg_field), .cfg_data(cfg_data),
     .headroom_bits(4'd0), .out_shift(4'd0), .out_offset(32'sd0),
     .out_min(-32'sd32768), .out_max(32'sd32767),
     .start(mix_prime), .render(mix_render),
