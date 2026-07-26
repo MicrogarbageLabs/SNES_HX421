@@ -439,6 +439,7 @@ wire        mix_rom_rd_req;
 wire [23:0] mix_rom_rd_addr;
 wire        mix_rom_rd_ack;
 wire signed [15:0] mix_rom_rd_data;
+wire [23:0] mix_drain_pos;
 hx_mixer_dac snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
@@ -450,6 +451,7 @@ hx_mixer_dac snes_dac(
   .rom_rd_addr(mix_rom_rd_addr),
   .rom_rd_ack(mix_rom_rd_ack),
   .rom_rd_data(mix_rom_rd_data),
+  .drain_pos(mix_drain_pos),
   .dbg_tick(hx_dbg_tick),
   .dbg_mix(hx_dbg_2),
   .dbg_sdout(hx_dbg_sdout),
@@ -897,9 +899,12 @@ wire [7:0] HX_SIG_DATA = (SNES_ADDR[3:0] == 4'd0) ? 8'h48          // 'H'
                        : (SNES_ADDR[3:0] == 4'd5) ? hx_dbg_2       // tone-edge / mix-frame count
                        : (SNES_ADDR[3:0] == 4'd6) ? hx_dbg_sdout   // sdout-edge count
 `ifdef HX421_AUDIO_MIXER
-                       : (SNES_ADDR[3:0] == 4'd8) ? MIX_DINr[7:0]  // 6b probe read, low byte
-                       : (SNES_ADDR[3:0] == 4'd9) ? MIX_DINr[15:8] // 6b probe read, high byte
-                       : (SNES_ADDR[3:0] == 4'd10)? MIX_RD_CNTr    // 6b probe read counter
+                       : (SNES_ADDR[3:0] == 4'd8) ? MIX_DINr[7:0]        // last mixer read, low byte
+                       : (SNES_ADDR[3:0] == 4'd9) ? MIX_DINr[15:8]       // last mixer read, high byte
+                       : (SNES_ADDR[3:0] == 4'd10)? MIX_RD_CNTr          // mixer read counter
+                       : (SNES_ADDR[3:0] == 4'd11)? mix_drain_pos[7:0]   // drain pointer (ch0 read pos)
+                       : (SNES_ADDR[3:0] == 4'd12)? mix_drain_pos[15:8]
+                       : (SNES_ADDR[3:0] == 4'd13)? mix_drain_pos[23:16]
 `endif
                        : (SNES_ADDR[3:0] == 4'd7) ? hx_dbg_status  // sticky evidence bits
                        :                            8'h00;

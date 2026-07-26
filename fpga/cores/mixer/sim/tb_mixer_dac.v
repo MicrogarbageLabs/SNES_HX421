@@ -29,11 +29,13 @@ module tb_mixer_dac;
     end
   end
 
+  wire [23:0] drain_pos;
   hx_mixer_dac dut(
     .clkin(clkin), .sysclk(sysclk), .palmode(1'b0),
     .sdout(sdout), .mclk_out(mclk_out), .lrck_out(lrck_out),
     .rom_rd_req(rom_rd_req), .rom_rd_addr(rom_rd_addr),
     .rom_rd_ack(rom_rd_ack), .rom_rd_data(rom_rd_data),
+    .drain_pos(drain_pos),
     .dbg_tick(dbg_tick), .dbg_mix(dbg_mix), .dbg_sdout(dbg_sdout), .dbg_status(dbg_status)
   );
 
@@ -72,6 +74,8 @@ module tb_mixer_dac;
     $display("mixer-dac: DAC input peak=%0d trough=%0d (sine amp 20480)", peak, trough);
     $display("mixer-dac: rising zero-crossings=%0d  freq=%.1f Hz (want ~344.5)", zc, freq);
 
+    $display("mixer-dac: drain_pos (ch0 read position) = %0d", drain_pos);
+    if (drain_pos == 0)               begin $display("FAIL: drain pointer never advanced"); fail=1; end
     if (dut.cfg_done !== 1'b1)        begin $display("FAIL: config FSM never completed"); fail=1; end
     if (mixframes < 100)             begin $display("FAIL: mixer not producing frames"); fail=1; end
     if (peak   < 15000)              begin $display("FAIL: output not reaching sine peak"); fail=1; end

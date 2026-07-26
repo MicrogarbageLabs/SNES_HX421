@@ -34,6 +34,7 @@ module hx_mixer_dac(
   output [23:0] rom_rd_addr,     // mixer sample index (word units)
   input         rom_rd_ack,
   input  signed [15:0] rom_rd_data,
+  output [23:0] drain_pos,       // channel 0 read position (STM32 drain pointer)
   // diagnostic bus (served at the SNES read window)
   output [7:0] dbg_tick,    // ++ each DAC sample tick
   output [7:0] dbg_mix,     // ++ each mixer frame produced (out_valid)
@@ -119,7 +120,8 @@ module hx_mixer_dac(
     .out_min(-32'sd32768), .out_max(32'sd32767),
     .start(mix_prime), .render(mix_render),
     .rd_req(rd_req), .rd_ch(rd_ch), .rd_addr(rd_addr), .rd_ack(rd_ack), .rd_data(rd_data),
-    .out_l(mix_l), .out_r(mix_r), .out_valid(mix_valid), .busy(mix_busy)
+    .out_l(mix_l), .out_r(mix_r), .out_valid(mix_valid), .busy(mix_busy),
+    .pos0(drain_pos)
   );
 
   // hold the finished frame as the DAC input

@@ -52,7 +52,12 @@ module hx_mixer_seq #(
     output reg  signed [31:0] out_l,
     output reg  signed [31:0] out_r,
     output reg         out_valid,
-    output wire        busy
+    output wire        busy,
+
+    // 6b streaming: channel 0's read position (sample index into its ring) — the
+    // DRAIN POINTER the STM32 polls to know how much of the ring the mixer has
+    // consumed, so it can refill without over/under-run.
+    output wire [23:0] pos0
 );
     localparam signed [15:0] Q15_ONE = 16'sd32767;
 
@@ -101,6 +106,7 @@ module hx_mixer_seq #(
     wire [CHW-1:0] cur = ci[CHW-1:0];
     assign rd_ch = cur;
     assign busy  = (state != S_IDLE);
+    assign pos0  = src_pos[0];        // drain pointer (channel 0)
 
     // ---- flat WORKING registers for the channel being processed ----
     reg  [31:0] w_phase;
