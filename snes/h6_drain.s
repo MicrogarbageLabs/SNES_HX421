@@ -62,8 +62,14 @@ reset:
         sta DMID1
         lda f:$3FF00D
         sta DHI1
+        ; delay that yields FREE-SLOT cycles to the mixer: every WRAM write is a
+        ; non-ROM SNES cycle -> free_strobe -> the mixer gets bus time and its read
+        ; position advances. (A pure ROM spin starves it -> frozen drain.)
         ldx #$8000
-@dly:   dex
+@dly:   stz $0000
+        stz $0001
+        stz $0002
+        dex
         bne @dly
         lda f:$3FF00B
         sta DLO2
