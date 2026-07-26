@@ -139,12 +139,20 @@ real mk3 firmware headers (`arm-none-eabi-gcc -mcpu=cortex-m4`):
    `if(<hx421 detected>){ if(!hx421_mode_init()) while(!hx421_mode_loop());
    prepare_reset(); continue; }`. Detection is a choice — a magic in the ROM
    header/title, a filename, or a new `romprops` flag.
-2. **FPGA pairing (the mixer must actually read the rings):** extend 6b.1b's
-   MIX_RD so the mixer channel reads from a runtime-set ring base with
-   `loop_len = ring_size/2`, and **expose the channel's read position** to the MCU
-   via an SPI status read (replaces the time-estimated drain). Then the streamed
-   samples become sound. 6b.1a/6b.1b prove the read path; this adds ring config +
-   drain reporting.
+2. **FPGA pairing (the mixer must actually read the rings):**
+   - **Drain pointer — DONE (2026-07-25):** the mixer's channel-0 read position
+     (`hx_mixer_seq.pos0` → `hx_mixer_dac.drain_pos` → main.v) is served at the
+     diagnostic window `$3F:F00B-F00D` (24-bit), sim-verified to advance.
+   - **Remaining:** (a) the channel must read from the *streaming ring* — set
+     `MIX_WAVE_BASE` to the ring base (0x800000) and the config FSM's `loop_len`
+     to `ring_size/2` (32768 for 64 KB), instead of the fixed 0x2000/128 wavetable
+     (ideally runtime-set by the STM32 via a new FPGA SPI command, not hardcoded);
+     (b) the STM32 reads the drain pointer — either an **SPI status read** (add a
+     command in `mcu_cmd.v` + an `fpga_spi.c` getter, replacing the time-estimate
+     in `hx421_mode.c`'s `read_ptr` seam), or an **SNES-relay** (the WRAM engine
+     reads `$F00B-F00D` and forwards it via `snescmd`, which the STM32 already
+     polls). Then the streamed samples become sound. 6b.1a/6b.1b prove the read
+     path on hardware.
 3. **FFT + input protocol** (A4 / joystick): CMSIS-DSP `arm_rfft_q15`, the post-mix
    capture read-back, and the SNES-ROM→snescmd button map.
 
