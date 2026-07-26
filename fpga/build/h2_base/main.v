@@ -433,14 +433,24 @@ assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 `ifdef HX421_AUDIO_MIXER
 // ---- HX-421 6b.1b: the mixer sources its wavetable from PSRAM -------------
 // hx_mixer_dac's read port drives the MIX_RD ROM-bus requestor (below); the
-// sine lives in the ROM image at MIX_WAVE_BASE, so the mixer plays it FROM PSRAM.
+// sample data lives in PSRAM at MIX_WAVE_BASE, so the mixer plays it FROM PSRAM.
+//
+// Two knobs pick WHAT the mixer plays, both overridable via VERILOG_MACRO so one
+// RTL serves the sine core, a long real-PCM clip, and the STM32 streaming ring:
+//   HX421_MIX_BASE  byte offset in PSRAM of the sample data (default 0x2000, the
+//                   ROM-baked sine; stream build -> 0x800000, the ring)
+//   HX421_LOOP_LEN  channel-0 loop length in samples (default 128; long-clip /
+//                   stream build -> ring size, e.g. 32768 for a 64 KB mono ring)
+`ifndef HX421_LOOP_LEN
+  `define HX421_LOOP_LEN 32'd128
+`endif
 wire [7:0] hx_dbg_tick, hx_dbg_2, hx_dbg_sdout, hx_dbg_status;
 wire        mix_rom_rd_req;
 wire [23:0] mix_rom_rd_addr;
 wire        mix_rom_rd_ack;
 wire signed [15:0] mix_rom_rd_data;
 wire [23:0] mix_drain_pos;
-hx_mixer_dac snes_dac(
+hx_mixer_dac #(.LOOP_LEN(`HX421_LOOP_LEN)) snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
   .palmode(dac_palmode_out),
@@ -1124,7 +1134,10 @@ end
 // FROM PSRAM. Sample index -> byte addr = base + index*2. Byte-swap: ROM_DATA has
 // the even byte in [15:8]; ca65 stores samples little-endian, so swap for natural.
 `ifdef HX421_AUDIO_MIXER
-localparam [23:0] MIX_WAVE_BASE = 24'h002000;   // ROM file offset of the sine
+`ifndef HX421_MIX_BASE
+  `define HX421_MIX_BASE 24'h002000
+`endif
+localparam [23:0] MIX_WAVE_BASE = `HX421_MIX_BASE;   // PSRAM byte addr of sample data
 reg        MIX_RD_PENDr  = 1'b0;
 reg [15:0] MIX_DINr      = 16'd0;
 reg [23:0] MIX_ROM_ADDRr = 24'd0;

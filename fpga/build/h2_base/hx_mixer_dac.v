@@ -20,7 +20,12 @@
 //  Public domain (CC0). No warranty.
 //////////////////////////////////////////////////////////////////////////////////
 
-module hx_mixer_dac(
+module hx_mixer_dac #(
+  // Loop length of channel 0, in samples. Default 128 = the baked sine. A
+  // streaming/long-clip build overrides this to the ring size (e.g. 32768 for a
+  // 64 KB mono ring) so the mixer wraps at the ring boundary, not every 128.
+  parameter [31:0] LOOP_LEN = 32'd128
+)(
   input  clkin,       // CLK2, 96 MHz
   input  sysclk,      // SNES_SYSCLK
   input  palmode,
@@ -97,7 +102,7 @@ module hx_mixer_dac(
         4'd3: begin cfg_field<=3'd3; cfg_data<=32'h00007FFF;   cfg_we<=1; cs<=4'd4; end // vol max
         4'd4: begin cfg_field<=3'd4; cfg_data<=32'h00007FFF;   cfg_we<=1; cs<=4'd5; end // pan_l max
         4'd5: begin cfg_field<=3'd5; cfg_data<=32'h00007FFF;   cfg_we<=1; cs<=4'd6; end // pan_r max
-        4'd6: begin cfg_field<=3'd6; cfg_data<=32'd128;        cfg_we<=1; cs<=4'd7; end // loop_len=128
+        4'd6: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;       cfg_we<=1; cs<=4'd7; end // loop_len (param)
         4'd7: begin mix_prime<=1'b1;                                      cs<=4'd8; end
         4'd8: begin if (mix_busy)  cs<=4'd9;  end                                       // prime started
         4'd9: begin if (!mix_busy) begin cfg_done<=1'b1; cs<=4'd10; end end             // prime done
