@@ -143,16 +143,34 @@ real mk3 firmware headers (`arm-none-eabi-gcc -mcpu=cortex-m4`):
    - **Drain pointer — DONE (2026-07-25):** the mixer's channel-0 read position
      (`hx_mixer_seq.pos0` → `hx_mixer_dac.drain_pos` → main.v) is served at the
      diagnostic window `$3F:F00B-F00D` (24-bit), sim-verified to advance.
-   - **Remaining:** (a) the channel must read from the *streaming ring* — set
-     `MIX_WAVE_BASE` to the ring base (0x800000) and the config FSM's `loop_len`
-     to `ring_size/2` (32768 for 64 KB), instead of the fixed 0x2000/128 wavetable
-     (ideally runtime-set by the STM32 via a new FPGA SPI command, not hardcoded);
-     (b) the STM32 reads the drain pointer — either an **SPI status read** (add a
-     command in `mcu_cmd.v` + an `fpga_spi.c` getter, replacing the time-estimate
-     in `hx421_mode.c`'s `read_ptr` seam), or an **SNES-relay** (the WRAM engine
-     reads `$F00B-F00D` and forwards it via `snescmd`, which the STM32 already
-     polls). Then the streamed samples become sound. 6b.1a/6b.1b prove the read
-     path on hardware.
+   - **Ring base + loop length — parameterized DONE (2026-07-26):** `hx_mixer_dac`
+     takes a `LOOP_LEN` parameter and `main.v` exposes `HX421_MIX_BASE` +
+     `HX421_LOOP_LEN` macros (default 0x2000/128 = the baked sine). A stream core is
+     just `build-fpga-core.ps1 -Macros "HX421_MIX_BASE=8388608","HX421_LOOP_LEN=32768"`
+     → the mixer reads the 0x800000 ring as a 64 KB mono loop, no other RTL change.
+     Sim-verified (`tb_loop_param`). Runtime-set-by-STM32 (an FPGA SPI command in
+     `mcu_cmd.v`) is a later refinement over the compile-time macro.
+   - **Remaining:** (b) the STM32 reads the drain pointer — either an **SPI status
+     read** (add a command in `mcu_cmd.v` + an `fpga_spi.c` getter, replacing the
+     time-estimate in `hx421_mode.c`'s `read_ptr` seam), or an **SNES-relay** (the
+     WRAM engine reads `$F00B-F00D` and forwards it via `snescmd`, which the STM32
+     already polls). Then the streamed samples become sound.
+
+### On-silicon test ladder (each rung standalone-testable before the firmware)
+The mixer read path + bandwidth model are validated on the FXPak in rungs that need
+no STM32, so a streaming failure is isolated to the ring/firmware side:
+1. **6b.1a/6b.1b** — mixer reads a PSRAM wavetable (single 128-sample sine). DONE.
+2. **h6_drain** — the drain pointer advances; proves the STM32's feedback readout and
+   that a ROM spin starves the mixer (free-slot contention). DONE (18→80).
+3. **h6_wram** — the 65816 jml's into WRAM so the cart bus is 100% free → the mixer
+   gets full 44.1 kHz bandwidth; a clean sustained sine vs the ROM-starved one. This
+   is the bandwidth foundation the stream needs (engine runs from WRAM, PSRAM is the
+   mixer's). *Pending John's bench.*
+4. **chord core** (`build-fpga-core.ps1 -Macros "HX421_SECOND_CH=1"`, reuses
+   `h6_wram.sfc`) — two channels (1.0 + 1.5) summed by the real mixer → an audible
+   fifth. First on-silicon multi-channel MIX; sim-verified (`tb_chord`). *Pending.*
+5. **stream core** (base=0x800000, loop_len=32768) + the STM32 firmware filling the
+   ring + drain feedback → A1: the first SD-streamed track through the mixer.
 3. **FFT + input protocol** (A4 / joystick): CMSIS-DSP `arm_rfft_q15`, the post-mix
    capture read-back, and the SNES-ROM→snescmd button map.
 
