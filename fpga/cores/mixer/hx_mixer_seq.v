@@ -34,6 +34,8 @@ module hx_mixer_seq #(
     input  wire [2:0]  cfg_field,     // 0 step_lo,1 step_hi,2 flags,3 vol,4 panl,5 panr,6 loop_len
     input  wire [31:0] cfg_data,
 
+    input  wire [N-1:0] ch_mute,      // external per-channel mute (OR'd with the muted flag; 0 = no-op)
+
     input  wire [3:0]  headroom_bits,
     input  wire [3:0]  out_shift,
     input  wire signed [31:0] out_offset,
@@ -175,7 +177,7 @@ module hx_mixer_seq #(
                     w_tap0   <= tap0[cur];     w_tap1 <= tap1[cur];
                     w_tap2   <= tap2[cur];     w_tap3 <= tap3[cur];
                     w_step   <= step[cur];     w_cubic<= cubic[cur];
-                    w_active <= active[cur];   w_muted<= muted[cur];
+                    w_active <= active[cur];   w_muted<= muted[cur] | ch_mute[cur];
                     w_loopf  <= loopf[cur];    w_loop_len <= loop_len[cur];
                     w_vol    <= vol[cur];      w_panl <= pan_l[cur]; w_panr <= pan_r[cur];
                     state    <= S_DISP;

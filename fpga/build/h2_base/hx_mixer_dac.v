@@ -34,7 +34,11 @@ module hx_mixer_dac #(
   // step 2.0 (each reads every other sample = one lane), ch0 panned hard-left, ch1
   // hard-right. Combine with per-channel base (main.v: BASE1 = BASE0 + 2) so ch0
   // reads the L lane and ch1 the R lane. Implies two channels + half volume.
-  parameter STEREO = 1'b0
+  parameter STEREO = 1'b0,
+  // When 1, auto-cycle the channel mute every ~1.5 s: both -> ch0-only -> ch1-only.
+  // A self-contained L/R separation test (no SNES input): with STEREO you hear both
+  // tones, then only the left (low), then only the right (high). Default 0 = no mute.
+  parameter TOGGLE = 1'b0
 )(
   input  clkin,       // CLK2, 96 MHz
   input  sysclk,      // SNES_SYSCLK
@@ -158,9 +162,28 @@ module hx_mixer_dac #(
       mix_render <= 1'b1;
   end
 
+  // ---- TOGGLE: auto-cycle the per-channel mute every ~1.5 s (66150 sample ticks) ----
+  //  phase 0 = both play, 1 = ch1 muted (only ch0/left), 2 = ch0 muted (only ch1/right).
+  reg [16:0] tog_cnt = 17'd0;
+  reg [1:0]  tog_phase = 2'd0;
+  always @(posedge clkin) begin
+    if (por_rst) begin tog_cnt <= 0; tog_phase <= 0; end
+    else if (sample_req) begin
+      if (tog_cnt >= 17'd66150) begin
+        tog_cnt   <= 0;
+        tog_phase <= (tog_phase == 2'd2) ? 2'd0 : tog_phase + 2'd1;
+      end else tog_cnt <= tog_cnt + 17'd1;
+    end
+  end
+  wire [7:0] mute_mask = ~TOGGLE ? 8'd0
+                       : (tog_phase == 2'd1) ? 8'b0000_0010   // mute ch1 -> ch0/left only
+                       : (tog_phase == 2'd2) ? 8'b0000_0001   // mute ch0 -> ch1/right only
+                       : 8'd0;                                // both
+
   hx_mixer_seq #(.N(8), .CHW(3)) u_mix (
     .clk(clkin), .rst(por_rst),
     .cfg_we(cfg_we), .cfg_ch(cfg_ch_r), .cfg_field(cfg_field), .cfg_data(cfg_data),
+    .ch_mute(mute_mask),
     .headroom_bits(4'd0), .out_shift(4'd0), .out_offset(32'sd0),
     .out_min(-32'sd32768), .out_max(32'sd32767),
     .start(mix_prime), .render(mix_render),

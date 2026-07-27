@@ -38,6 +38,7 @@ module tb_mix_seq;
     hx_mixer_seq #(.N(N), .CHW(CHW)) dut (
         .clk(clk), .rst(rst),
         .cfg_we(cfg_we), .cfg_ch(cfg_ch), .cfg_field(cfg_field), .cfg_data(cfg_data),
+        .ch_mute({N{1'b0}}),
         .headroom_bits(headroom), .out_shift(out_shift), .out_offset(out_offset),
         .out_min(out_min), .out_max(out_max),
         .start(start), .render(render),
