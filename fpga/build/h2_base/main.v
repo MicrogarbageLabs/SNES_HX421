@@ -449,6 +449,11 @@ assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 `ifndef HX421_SECOND_CH
   `define HX421_SECOND_CH 1'b0
 `endif
+// HX421_STEREO=1 -> ch0/ch1 form a stereo pair (step 2.0, hard L/R) over an
+// interleaved ring; pair with HX421_MIX_BASE1 = HX421_MIX_BASE + 2.
+`ifndef HX421_STEREO
+  `define HX421_STEREO 1'b0
+`endif
 wire [7:0] hx_dbg_tick, hx_dbg_2, hx_dbg_sdout, hx_dbg_status;
 wire        mix_rom_rd_req;
 wire [23:0] mix_rom_rd_addr;
@@ -456,7 +461,7 @@ wire [2:0]  mix_rom_rd_ch;
 wire        mix_rom_rd_ack;
 wire signed [15:0] mix_rom_rd_data;
 wire [23:0] mix_drain_pos;
-hx_mixer_dac #(.LOOP_LEN(`HX421_LOOP_LEN), .SECOND_CH(`HX421_SECOND_CH)) snes_dac(
+hx_mixer_dac #(.LOOP_LEN(`HX421_LOOP_LEN), .SECOND_CH(`HX421_SECOND_CH), .STEREO(`HX421_STEREO)) snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
   .palmode(dac_palmode_out),

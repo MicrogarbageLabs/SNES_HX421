@@ -29,7 +29,12 @@ module hx_mixer_dac #(
   // above ch0) and drop both channels to half volume -> the mixer sums two tones
   // into a chord: the first on-silicon test of actual multi-channel MIXING. When
   // 0 (default) the FSM is byte-identical to the single-channel sine core.
-  parameter SECOND_CH = 1'b0
+  parameter SECOND_CH = 1'b0,
+  // When 1, configure a STEREO pair for an interleaved L/R ring: both channels at
+  // step 2.0 (each reads every other sample = one lane), ch0 panned hard-left, ch1
+  // hard-right. Combine with per-channel base (main.v: BASE1 = BASE0 + 2) so ch0
+  // reads the L lane and ch1 the R lane. Implies two channels + half volume.
+  parameter STEREO = 1'b0
 )(
   input  clkin,       // CLK2, 96 MHz
   input  sysclk,      // SNES_SYSCLK
@@ -95,7 +100,19 @@ module hx_mixer_dac #(
   //  also channel 1 at step 1.5 (a fifth up), and both volumes drop to half so the
   //  summed pair doesn't clip. SECOND_CH=0 -> ch1 states are skipped and ch0 keeps
   //  full volume, so the single-channel core is unchanged.
-  localparam [15:0] CH_VOL = SECOND_CH ? 16'h4000 : 16'h7FFF;
+  localparam        TWO_CH   = SECOND_CH | STEREO;
+  localparam [15:0] CH_VOL   = TWO_CH ? 16'h4000 : 16'h7FFF;
+  // per-channel step (64-bit fixed pt: hi=integer, lo=fraction) + pan.
+  //  single/chord: ch0 step 1.0 center; chord ch1 step 1.5 center.
+  //  stereo: both step 2.0 (one interleaved lane each), ch0 hard-L, ch1 hard-R.
+  localparam [31:0] STEP0_HI = STEREO ? 32'd2 : 32'd1;
+  localparam [31:0] STEP0_LO = 32'd0;
+  localparam [31:0] STEP1_HI = STEREO ? 32'd2 : 32'd1;
+  localparam [31:0] STEP1_LO = STEREO ? 32'd0 : 32'h80000000;   // stereo 2.0 vs chord 1.5
+  localparam [31:0] PAN0_L   = 32'h00007FFF;
+  localparam [31:0] PAN0_R   = STEREO ? 32'd0 : 32'h00007FFF;
+  localparam [31:0] PAN1_L   = STEREO ? 32'd0 : 32'h00007FFF;
+  localparam [31:0] PAN1_R   = 32'h00007FFF;
   reg        cfg_we;
   reg [2:0]  cfg_ch_r;
   reg [2:0]  cfg_field;
@@ -110,20 +127,20 @@ module hx_mixer_dac #(
     end else begin
       case (cs)
         // ---- channel 0 ----
-        5'd0: begin cfg_ch_r<=3'd0; cfg_field<=3'd0; cfg_data<=32'd0;              cfg_we<=1; cs<=5'd1; end // step_lo=0
-        5'd1: begin cfg_field<=3'd1; cfg_data<=32'd1;                              cfg_we<=1; cs<=5'd2; end // step_hi=1 (1.0)
+        5'd0: begin cfg_ch_r<=3'd0; cfg_field<=3'd0; cfg_data<=STEP0_LO;           cfg_we<=1; cs<=5'd1; end // step_lo
+        5'd1: begin cfg_field<=3'd1; cfg_data<=STEP0_HI;                           cfg_we<=1; cs<=5'd2; end // step_hi
         5'd2: begin cfg_field<=3'd2; cfg_data<=32'h0000000A;                       cfg_we<=1; cs<=5'd3; end // active+loop
         5'd3: begin cfg_field<=3'd3; cfg_data<={16'd0, CH_VOL};                    cfg_we<=1; cs<=5'd4; end // vol
-        5'd4: begin cfg_field<=3'd4; cfg_data<=32'h00007FFF;                       cfg_we<=1; cs<=5'd5; end // pan_l max
-        5'd5: begin cfg_field<=3'd5; cfg_data<=32'h00007FFF;                       cfg_we<=1; cs<=5'd6; end // pan_r max
-        5'd6: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;   cfg_we<=1; cs<=(SECOND_CH ? 5'd7 : 5'd14); end   // loop_len
-        // ---- channel 1 (only if SECOND_CH): step 1.5 = ch0 + a fifth ----
-        5'd7:  begin cfg_ch_r<=3'd1; cfg_field<=3'd0; cfg_data<=32'h80000000;      cfg_we<=1; cs<=5'd8;  end // step_lo=0.5
-        5'd8:  begin cfg_field<=3'd1; cfg_data<=32'd1;                             cfg_we<=1; cs<=5'd9;  end // step_hi=1 (=>1.5)
+        5'd4: begin cfg_field<=3'd4; cfg_data<=PAN0_L;                             cfg_we<=1; cs<=5'd5; end // pan_l
+        5'd5: begin cfg_field<=3'd5; cfg_data<=PAN0_R;                             cfg_we<=1; cs<=5'd6; end // pan_r
+        5'd6: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;   cfg_we<=1; cs<=(TWO_CH ? 5'd7 : 5'd14); end      // loop_len
+        // ---- channel 1 (if TWO_CH): chord=step 1.5 center; stereo=step 2.0 hard-R ----
+        5'd7:  begin cfg_ch_r<=3'd1; cfg_field<=3'd0; cfg_data<=STEP1_LO;          cfg_we<=1; cs<=5'd8;  end // step_lo
+        5'd8:  begin cfg_field<=3'd1; cfg_data<=STEP1_HI;                          cfg_we<=1; cs<=5'd9;  end // step_hi
         5'd9:  begin cfg_field<=3'd2; cfg_data<=32'h0000000A;                      cfg_we<=1; cs<=5'd10; end // active+loop
         5'd10: begin cfg_field<=3'd3; cfg_data<={16'd0, CH_VOL};                   cfg_we<=1; cs<=5'd11; end // vol
-        5'd11: begin cfg_field<=3'd4; cfg_data<=32'h00007FFF;                      cfg_we<=1; cs<=5'd12; end // pan_l max
-        5'd12: begin cfg_field<=3'd5; cfg_data<=32'h00007FFF;                      cfg_we<=1; cs<=5'd13; end // pan_r max
+        5'd11: begin cfg_field<=3'd4; cfg_data<=PAN1_L;                            cfg_we<=1; cs<=5'd12; end // pan_l
+        5'd12: begin cfg_field<=3'd5; cfg_data<=PAN1_R;                            cfg_we<=1; cs<=5'd13; end // pan_r
         5'd13: begin cfg_field<=3'd6; cfg_data<=LOOP_LEN;                          cfg_we<=1; cs<=5'd14; end // loop_len
         // ---- prime + go ----
         5'd14: begin mix_prime<=1'b1;                                                         cs<=5'd15; end
