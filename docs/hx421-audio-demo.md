@@ -155,11 +155,30 @@ handled by the drain-pointer loop. So the first streamed track needs only integr
    SNES-relay (step 2 below) upgrades it to exact for long/FMV playback.
 
 **Remaining to run it:**
-1. **`main.c` hook** (John's build): in the game-run loop, next to
-   `if(romprops.has_msu1){ while(!msu1_loop()); … }`, add
-   `if(<hx421 detected>){ if(!hx421_mode_init()) while(!hx421_mode_loop());
-   prepare_reset(); continue; }`. Detection is a choice — a magic in the ROM
-   header/title, a filename, or a new `romprops` flag.
+1. **`main.c` hook** (John's build): the run loop is `src/main.c` ~line 472. The
+   ROM title lives in `romprops.header.name[21]` (header 0xC0), so key on a magic
+   there. Insert right after the `has_msu1` block:
+   ```c
+   /* HX-421 audio streaming demo (title starts "HX421ST") */
+   if(!memcmp(romprops.header.name, "HX421ST", 7)) {
+     if(!hx421_mode_init()) while(!hx421_mode_loop());
+     prepare_reset();
+     continue;
+   }
+   ```
+   NB the diagnostic ROMs use title `HX421 H1 PROBE`, so the magic must be more
+   specific than `HX421` — give the streaming demo ROM a title beginning `HX421ST`
+   (e.g. `HX421ST STREAM DEMO `). Detection is still your choice (filename / a new
+   `romprops` flag work too); this is the least-invasive one.
+
+   **Core ↔ firmware channel matching (important):**
+   - **A1 (one stereo track):** flash `fpga_obc1_stream.bi3` — ch0/ch1 read *ring0*
+     (0x800000) as L/R of `music1.wav`. `hx421_mode` should then manage **one**
+     stream (open only `music1.wav`); leaving `music2.wav`/ring1 open just spends SD
+     bandwidth on a ring no channel reads. `drain_pos` = ch0 = music1's L position.
+   - **A2 (two stereo tracks mixed):** needs a **4-channel** core — music1 L/R from
+     ring0 + music2 L/R from ring1 — i.e. add `HX421_MIX_BASE2/3` mux arms + two more
+     FSM channels, then `hx421_mode`'s existing 2-stream setup matches as-is.
 2. **FPGA pairing (the mixer must actually read the rings):**
    - **Drain pointer — DONE (2026-07-25):** the mixer's channel-0 read position
      (`hx_mixer_seq.pos0` → `hx_mixer_dac.drain_pos` → main.v) is served at the
