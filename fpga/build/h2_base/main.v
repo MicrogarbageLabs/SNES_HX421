@@ -1380,7 +1380,11 @@ assign ROM_WE = SD_DMA_TO_ROM
                 : 1'b1;
 
 assign ROM_BHE = ROM_ADDR0;
-assign ROM_BLE = ~ROM_ADDR0 & ~(~SD_DMA_TO_ROM & CTX_HIT & CTX_ROM_WORDr) & ~(~SD_DMA_TO_ROM & DMA_HIT & DMA_ROM_WORDr);
+// MIX reads are 16-bit word reads: force ROM_BLE=0 (low byte lane enabled) so the
+// PSRAM outputs BOTH bytes, like the CTX/DMA word reads. Without this the mixer got
+// only the ROM_ADDR0-selected (high/even) byte; the low byte was a disabled lane =
+// garbage -> buzz (diagnosed via h6_rdchk: high byte correct, low byte varying).
+assign ROM_BLE = ~ROM_ADDR0 & ~(~SD_DMA_TO_ROM & CTX_HIT & CTX_ROM_WORDr) & ~(~SD_DMA_TO_ROM & DMA_HIT & DMA_ROM_WORDr) & ~MIX_HIT;
 
 reg ReadOrWrite_r; always @(posedge CLK2) ReadOrWrite_r <= ~(SNES_READr[1] & SNES_READr[0] & SNES_WRITEr[1] & SNES_WRITEr[0]);
 
