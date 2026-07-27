@@ -133,6 +133,27 @@ real mk3 firmware headers (`arm-none-eabi-gcc -mcpu=cortex-m4`):
   ```
   Then `make CONFIG=config-mk3-stm32`. All four objects compile clean for the M4.
 
+## Streaming assembly — turnkey (2026-07-27)
+
+The mixer is fully **hardware-proven**: DAC → mixer → PSRAM read (both byte lanes, after
+the `ROM_BLE` fix `c2f1ff4`) → multi-channel sum → SNES out, all confirmed on the FXPak
+(clean tone, then a clean chord). Playback is SNES-clock-locked (the DAC's phase-acc NCO
+on `SNES_SYSCLK`), so audio can't drift vs. video — the only drift is source-vs-ring,
+handled by the drain-pointer loop. So the first streamed track needs only integration:
+
+1. **FPGA — DONE.** Flash `fpga_obc1_stream.bi3` (stereo core: ch0/ch1 = L/R of the
+   0x800000 ring, step 2.0, `LOOP_LEN=32768`). Built via
+   `build-fpga-core.ps1 -Macros HX421_STEREO=1,HX421_MIX_BASE=8388608,HX421_MIX_BASE1=8388610,HX421_LOOP_LEN=32768`.
+2. **SNES side — DONE.** Run `h6_wram.sfc` (or the eventual demo ROM): the 65816 jml's
+   into WRAM so the cart bus is free and the mixer gets full PSRAM bandwidth. On the
+   stream core the mixer reads the ring (0x800000), not the ROM, so the SNES ROM's audio
+   content is irrelevant — it just needs to vacate the bus.
+3. **STM32 — John's build.** Add the `main.c` mode hook (below), `make CONFIG=config-mk3-stm32`
+   with the four modules (stream/wav/mode/wav_read) + the Makefile recipe, put
+   `music1.wav`/`music2.wav` (16-bit stereo) on the SD. `hx421_mode` fills the 0x800000
+   ring; the stereo core plays it. First pass can use the **time-estimated** drain; the
+   SNES-relay (step 2 below) upgrades it to exact for long/FMV playback.
+
 **Remaining to run it:**
 1. **`main.c` hook** (John's build): in the game-run loop, next to
    `if(romprops.has_msu1){ while(!msu1_loop()); … }`, add
