@@ -42,6 +42,7 @@ module hx_mixer_dac #(
   //  PSRAM and returns rom_rd_data (already byte-order-corrected) + rom_rd_ack.
   output        rom_rd_req,
   output [23:0] rom_rd_addr,     // mixer sample index (word units)
+  output [2:0]  rom_rd_ch,       // which channel this fetch is for (per-channel base select)
   input         rom_rd_ack,
   input  signed [15:0] rom_rd_data,
   output [23:0] drain_pos,       // channel 0 read position (STM32 drain pointer)
@@ -81,6 +82,7 @@ module hx_mixer_dac #(
   wire [31:0] rd_addr;
   assign rom_rd_req  = rd_req;
   assign rom_rd_addr = rd_addr[23:0];       // sample index; main.v scales to bytes
+  assign rom_rd_ch   = rd_ch;               // channel of this fetch (main.v picks its base)
   wire        rd_ack  = rom_rd_ack;
   wire signed [15:0] rd_data = rom_rd_data; // byte-order corrected in main.v
 

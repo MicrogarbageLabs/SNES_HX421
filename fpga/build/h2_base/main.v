@@ -452,6 +452,7 @@ assign SD_DMA_TO_ROM = (SD_DMA_STATUS && (SD_DMA_TGT == 2'b00));
 wire [7:0] hx_dbg_tick, hx_dbg_2, hx_dbg_sdout, hx_dbg_status;
 wire        mix_rom_rd_req;
 wire [23:0] mix_rom_rd_addr;
+wire [2:0]  mix_rom_rd_ch;
 wire        mix_rom_rd_ack;
 wire signed [15:0] mix_rom_rd_data;
 wire [23:0] mix_drain_pos;
@@ -464,6 +465,7 @@ hx_mixer_dac #(.LOOP_LEN(`HX421_LOOP_LEN), .SECOND_CH(`HX421_SECOND_CH)) snes_da
   .lrck_out(DAC_LRCK),
   .rom_rd_req(mix_rom_rd_req),
   .rom_rd_addr(mix_rom_rd_addr),
+  .rom_rd_ch(mix_rom_rd_ch),
   .rom_rd_ack(mix_rom_rd_ack),
   .rom_rd_data(mix_rom_rd_data),
   .drain_pos(mix_drain_pos),
@@ -1142,7 +1144,17 @@ end
 `ifndef HX421_MIX_BASE
   `define HX421_MIX_BASE 24'h002000
 `endif
-localparam [23:0] MIX_WAVE_BASE = `HX421_MIX_BASE;   // PSRAM byte addr of sample data
+// Per-channel PSRAM base. Channel 0 uses HX421_MIX_BASE; channel 1 uses
+// HX421_MIX_BASE1 (defaults to the same, so the chord/sine cores are unchanged).
+// A stereo stream sets BASE1 = BASE0 + 2 so ch0/ch1 read the L/R interleaved lanes;
+// two independent streams set BASE1 to the second ring. (Channels 2-7 fall back to
+// BASE0 for now; add BASEn macros + mux arms when the full 8-ch demo needs them.)
+`ifndef HX421_MIX_BASE1
+  `define HX421_MIX_BASE1 `HX421_MIX_BASE
+`endif
+localparam [23:0] MIX_WAVE_BASE = `HX421_MIX_BASE;   // PSRAM byte addr of ch0 samples
+localparam [23:0] MIX_WAVE_BASE1 = `HX421_MIX_BASE1;
+wire [23:0] mix_base_sel = (mix_rom_rd_ch == 3'd1) ? MIX_WAVE_BASE1 : MIX_WAVE_BASE;
 reg        MIX_RD_PENDr  = 1'b0;
 reg [15:0] MIX_DINr      = 16'd0;
 reg [23:0] MIX_ROM_ADDRr = 24'd0;
@@ -1151,7 +1163,7 @@ wire       MIX_HIT = (STATE == ST_MIX_RD_ADDR) | (STATE == ST_MIX_RD_END);
 always @(posedge CLK2) begin
   if(mix_rom_rd_req & ~MIX_RD_PENDr) begin
     MIX_RD_PENDr  <= 1'b1;
-    MIX_ROM_ADDRr <= MIX_WAVE_BASE + {mix_rom_rd_addr[22:0], 1'b0};
+    MIX_ROM_ADDRr <= mix_base_sel + {mix_rom_rd_addr[22:0], 1'b0};
   end else if(STATE == ST_MIX_RD_END) begin
     MIX_RD_PENDr <= 1'b0;
     MIX_RD_CNTr  <= MIX_RD_CNTr + 8'd1;
