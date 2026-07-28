@@ -75,6 +75,8 @@ reset:
         ; ---- copy the button loop into WRAM and run it there ----
         sep #$30
 .i8
+        lda #$FF
+        sta $01                         ; last-mask sentinel -> first pass always writes
         ldx #$00
 @cp:    lda f:wram_blob,x
         sta f:$7E2000,x
@@ -102,9 +104,13 @@ wram_blob:
         lda $00
         ora #$02                        ; R released -> mute ch1 (right)
         sta $00
-:       ldx $00
+:       lda $00
+        cmp $01                         ; only touch the cart bus when the mask CHANGES,
+        beq :+                          ; so the mixer keeps ~full PSRAM bandwidth
+        sta $01
+        tax
         lda f:$3FF010,x                 ; read $3F:F010+mask -> FPGA latches ext_mute
-        bra wram_blob
+:       bra wram_blob
 wram_blob_end:
 
 
