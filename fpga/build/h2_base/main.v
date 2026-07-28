@@ -974,10 +974,19 @@ always @(posedge CLK2) begin
   if (SNES_WR_end & (SNES_ADDR[23:16] == 8'h3F) & (SNES_ADDR[15:5] == 11'h781))
     vec_mem[SNES_ADDR[4:0]] <= BUS_DATA;
 end
-// Step 1: serve ONLY the reset vector ($FFFC-$FFFD) at $00:FFFx. NMI/IRQ pass through
-// to the ROM so the sd2snes LOADER (interrupts on while loading) keeps its real
-// handlers -- serving 0 there crashed it. Widening to NMI/IRQ waits for valid vec_mem.
-wire VEC_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h00) & (SNES_ADDR[15:1] == 15'h7FFE);
+// Step 2b: widen-enable. Writing bit0 of $3F:F060 selects whether the WHOLE vector
+// region ($FFE0-$FFFF, incl. NMI/IRQ) is served from vec_mem, or just the reset vector.
+// The engine loads valid NMI/IRQ handlers into vec_mem FIRST, then sets this -- so the
+// sd2snes loader (which runs before any of that) never sees a served-0 NMI/IRQ.
+reg vec_widen_en = 1'b0;
+always @(posedge CLK2) begin
+  if (SNES_WR_end & (SNES_ADDR[23:16] == 8'h3F) & (SNES_ADDR[15:0] == 16'hF060))
+    vec_widen_en <= BUS_DATA[0];
+end
+// Reset ($FFFC-$FFFD) always served; NMI/IRQ/etc. ($FFE0-$FFFF) served only once widened.
+wire VEC_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h00)
+             & ( (SNES_ADDR[15:1] == 15'h7FFE)
+               | (vec_widen_en & (SNES_ADDR[15:5] == 11'h7FF)) );
 // Step 2: READBACK window at $3F:F040..F05F -> vec_mem[offset], to verify writes.
 wire VEC_RB_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h3F) & (SNES_ADDR[15:5] == 11'h782);
 wire [7:0] VEC_DATA = vec_mem[SNES_ADDR[4:0]];
