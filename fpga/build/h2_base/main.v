@@ -465,10 +465,19 @@ wire [2:0]  mix_rom_rd_ch;
 wire        mix_rom_rd_ack;
 wire signed [15:0] mix_rom_rd_data;
 wire [23:0] mix_drain_pos;
+// SNES button control of the mixer mute: the guest reads $3F:F010..F013, and the low
+// 2 address bits become the per-channel mute mask (bit0=ch0/left, bit1=ch1/right).
+// Uses the proven read-window decode (same $3F:F0xx region as the diagnostic reads).
+reg [7:0] mix_mute_ctrl = 8'd0;
+always @(posedge CLK2) begin
+  if ((SNES_ADDR[23:16] == 8'h3F) & (SNES_ADDR[15:4] == 12'h0F01))
+    mix_mute_ctrl <= {6'd0, SNES_ADDR[1:0]};
+end
 hx_mixer_dac #(.LOOP_LEN(`HX421_LOOP_LEN), .SECOND_CH(`HX421_SECOND_CH), .STEREO(`HX421_STEREO), .TOGGLE(`HX421_TOGGLE)) snes_dac(
   .clkin(CLK2),
   .sysclk(SNES_SYSCLK),
   .palmode(dac_palmode_out),
+  .ext_mute(mix_mute_ctrl),
   .sdout(DAC_SDOUT),
   .mclk_out(DAC_MCLK),
   .lrck_out(DAC_LRCK),

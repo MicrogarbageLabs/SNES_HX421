@@ -31,7 +31,7 @@ module tb_mixer_dac;
 
   wire [23:0] drain_pos;
   hx_mixer_dac dut(
-    .clkin(clkin), .sysclk(sysclk), .palmode(1'b0),
+    .clkin(clkin), .sysclk(sysclk), .palmode(1'b0), .ext_mute(8'd0),
     .sdout(sdout), .mclk_out(mclk_out), .lrck_out(lrck_out),
     .rom_rd_req(rom_rd_req), .rom_rd_addr(rom_rd_addr),
     .rom_rd_ack(rom_rd_ack), .rom_rd_data(rom_rd_data),

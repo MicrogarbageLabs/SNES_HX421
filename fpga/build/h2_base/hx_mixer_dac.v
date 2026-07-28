@@ -43,6 +43,7 @@ module hx_mixer_dac #(
   input  clkin,       // CLK2, 96 MHz
   input  sysclk,      // SNES_SYSCLK
   input  palmode,
+  input  [7:0] ext_mute,      // external per-channel mute (SNES-controlled; OR'd with TOGGLE)
   output sdout,
   output mclk_out,
   output lrck_out,
@@ -175,10 +176,11 @@ module hx_mixer_dac #(
       end else tog_cnt <= tog_cnt + 17'd1;
     end
   end
-  wire [7:0] mute_mask = ~TOGGLE ? 8'd0
+  wire [7:0] toggle_mask = ~TOGGLE ? 8'd0
                        : (tog_phase == 2'd1) ? 8'b0000_0010   // mute ch1 -> ch0/left only
                        : (tog_phase == 2'd2) ? 8'b0000_0001   // mute ch0 -> ch1/right only
                        : 8'd0;                                // both
+  wire [7:0] mute_mask = toggle_mask | ext_mute;              // ext_mute = SNES button control
 
   hx_mixer_seq #(.N(8), .CHW(3)) u_mix (
     .clk(clkin), .rst(por_rst),

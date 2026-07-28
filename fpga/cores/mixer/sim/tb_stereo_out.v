@@ -28,7 +28,7 @@ module tb_stereo_out;
   end
 
   hx_mixer_dac #(.LOOP_LEN(32'd128), .STEREO(1'b1)) dut (
-    .clkin(clk), .sysclk(sysclk), .palmode(1'b0),
+    .clkin(clk), .sysclk(sysclk), .palmode(1'b0), .ext_mute(8'd0),
     .sdout(), .mclk_out(), .lrck_out(),
     .rom_rd_req(rom_rd_req), .rom_rd_addr(rom_rd_addr), .rom_rd_ch(rom_rd_ch),
     .rom_rd_ack(rom_rd_ack), .rom_rd_data(rom_rd_data),
