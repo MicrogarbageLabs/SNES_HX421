@@ -14,9 +14,11 @@ Power-up defaults: all `0` except the reset vector `$FFFC/$FFFD` = `$00/$80` (�
 
 | Access | SNES address | Effect |
 |---|---|---|
-| **Serve** (read) | `$00:FFFC-$FFFD` | returns `vec_mem[0x1C..0x1D]` (reset vector) — the CPU boots here |
+| **Serve** (read) | `$00:FFFC-$FFFD` | returns `vec_mem[0x1C..0x1D]` (reset) — always |
+| **Serve** (read) | `$00:FFE0-$FFFF` | returns `vec_mem[addr-$FFE0]` — **only when widen=1** (NMI/IRQ/etc.) |
 | **Write** | `$3F:F020 + n` (n=0..31) | `vec_mem[n] <= data byte` |
 | **Readback** (read) | `$3F:F040 + n` (n=0..31) | returns `vec_mem[n]` (verify writes) |
+| **Widen enable** (write) | `$3F:F060` | `widen <= data bit0` (0 = reset-only serve; 1 = whole region) |
 
 Notes:
 - **Reset-only serve, for now.** Only `$FFFC-$FFFD` is served from `vec_mem`; NMI/IRQ
@@ -38,9 +40,10 @@ hardware, and keeps the PC-dev path bit-for-bit with the FXPak.
 ## Status
 - **Step 1 — reset serve: HARDWARE-CONFIRMED** (`h6_bramvec.sfc` → solid green; the SNES
   booted to `$8000` from the fabric, not the ROM's `$FFFC`).
-- **Step 2a — write window: built** (`h6_vecwrite.sfc` writes `vec_mem[0]=$AB`, reads it
-  back; GREEN = the SNES-write path works). *Pending bench.*
-- **Step 2b (next)** — a widen-enable control + NMI test: engine writes an NMI handler
-  into `vec_mem`, enables the NMI/IRQ serve, and the handler runs from the fabric vector.
+- **Step 2a — write window: HARDWARE-CONFIRMED** (`h6_vecwrite.sfc` → green: the SNES
+  wrote `vec_mem[0]=$AB` via `$3F:F020` and read it back via `$3F:F040`).
+- **Step 2b — widen + custom NMI handler: built** (`h6_vecnmi.sfc` installs an NMI
+  handler into `vec_mem[$FFEA]`, sets widen, enables NMI → the handler cycles the
+  backdrop color each vblank, fetched from the fabric vector). *Pending bench.*
 - **Step 3** — MCU copies each ROM's real vectors into `vec_mem` at load (firmware), so
   the reset default is per-ROM and the whole thing is transparent to any ROM.
