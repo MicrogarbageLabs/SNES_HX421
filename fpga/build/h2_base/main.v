@@ -966,19 +966,28 @@ initial begin
   vec_mem[5'h1C] = 8'h00;   // $FFFC low  -> reset = $8000
   vec_mem[5'h1D] = 8'h80;   // $FFFD high
 end
-// Step 1: intercept ONLY the reset vector ($FFFC-$FFFD). NMI/IRQ ($FFEA/$FFEE/
-// $FFFA/$FFFE) pass through to the ROM so the sd2snes LOADER (which runs with
-// interrupts on while loading) still reads its real handlers -- intercepting the
-// whole region and serving 0 for NMI/IRQ crashed the loader. Widening to NMI/IRQ is
-// safe only once vec_mem holds valid handlers (the MCU-init / write-path steps).
+// Step 2: WRITE window. The guest writes $3F:F020..F03F to load vec_mem[0..31]
+// (offset = addr low 5 bits, data = the write byte). BUS_DATA holds SNES_DATA_IN
+// during a write; latch on SNES_WR_end. This is how the WRAM engine installs its own
+// vectors (e.g. NMI/IRQ -> WRAM handlers).
+always @(posedge CLK2) begin
+  if (SNES_WR_end & (SNES_ADDR[23:16] == 8'h3F) & (SNES_ADDR[15:5] == 11'h781))
+    vec_mem[SNES_ADDR[4:0]] <= BUS_DATA;
+end
+// Step 1: serve ONLY the reset vector ($FFFC-$FFFD) at $00:FFFx. NMI/IRQ pass through
+// to the ROM so the sd2snes LOADER (interrupts on while loading) keeps its real
+// handlers -- serving 0 there crashed it. Widening to NMI/IRQ waits for valid vec_mem.
 wire VEC_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h00) & (SNES_ADDR[15:1] == 15'h7FFE);
+// Step 2: READBACK window at $3F:F040..F05F -> vec_mem[offset], to verify writes.
+wire VEC_RB_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h3F) & (SNES_ADDR[15:5] == 11'h782);
 wire [7:0] VEC_DATA = vec_mem[SNES_ADDR[4:0]];
 `else
 wire VEC_HIT = 1'b0;
+wire VEC_RB_HIT = 1'b0;
 wire [7:0] VEC_DATA = 8'h00;
 `endif
 
-assign SNES_DATA = (~SNES_READ & VEC_HIT) ? VEC_DATA
+assign SNES_DATA = (~SNES_READ & (VEC_HIT | VEC_RB_HIT)) ? VEC_DATA
                    :(~SNES_READ & HX_SIG_HIT) ? HX_SIG_DATA
                    :(r213f_enable & ~SNES_PARD) ? (r213f_forceread ? 8'bZ : r213fr)
                    :(r2100_enable & ~SNES_PAWR & r2100_forcewrite) ? r2100r
