@@ -25,6 +25,8 @@ reset:
 .a8
         lda #$8F
         sta $2100                       ; force blank
+        stz $212C                       ; no main-screen BG layers -> only backdrop shows
+        stz $212D                       ; no sub-screen layers (kills leftover loader VRAM)
         stz $2121                       ; CGRAM address 0 (backdrop)
         lda #$E0
         sta $2122                       ; color low  ($03E0 = green)

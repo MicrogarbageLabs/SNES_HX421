@@ -966,7 +966,12 @@ initial begin
   vec_mem[5'h1C] = 8'h00;   // $FFFC low  -> reset = $8000
   vec_mem[5'h1D] = 8'h80;   // $FFFD high
 end
-wire VEC_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h00) & (SNES_ADDR[15:5] == 11'h7FF);
+// Step 1: intercept ONLY the reset vector ($FFFC-$FFFD). NMI/IRQ ($FFEA/$FFEE/
+// $FFFA/$FFFE) pass through to the ROM so the sd2snes LOADER (which runs with
+// interrupts on while loading) still reads its real handlers -- intercepting the
+// whole region and serving 0 for NMI/IRQ crashed the loader. Widening to NMI/IRQ is
+// safe only once vec_mem holds valid handlers (the MCU-init / write-path steps).
+wire VEC_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h00) & (SNES_ADDR[15:1] == 15'h7FFE);
 wire [7:0] VEC_DATA = vec_mem[SNES_ADDR[4:0]];
 `else
 wire VEC_HIT = 1'b0;
