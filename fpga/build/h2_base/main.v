@@ -953,7 +953,28 @@ wire [7:0] HX_SIG_DATA = (SNES_ADDR[1:0] == 2'd0) ? 8'h48   // 'H'
                        :                            8'h32;  // '2'
 `endif
 
-assign SNES_DATA = (~SNES_READ & HX_SIG_HIT) ? HX_SIG_DATA
+// ---- 65816 vector region ($00:FFE0-FFFF) served from FPGA registers (BRAM) ----
+// Instead of PSRAM. Lets the WRAM engine install its own NMI/IRQ handlers by
+// rewriting the vectors, and takes the boot path off the PSRAM bus (no mixer
+// contention -> no boot-time tilemap garbling). Step 1: reset ($FFFC) served here,
+// defaulting to $8000, to prove the boot vector comes from the fabric not the ROM.
+`ifdef HX421_BRAM_VECTORS
+reg [7:0] vec_mem [0:31];
+integer vinit;
+initial begin
+  for (vinit = 0; vinit < 32; vinit = vinit + 1) vec_mem[vinit] = 8'h00;
+  vec_mem[5'h1C] = 8'h00;   // $FFFC low  -> reset = $8000
+  vec_mem[5'h1D] = 8'h80;   // $FFFD high
+end
+wire VEC_HIT = ~SNES_ROMSEL & (SNES_ADDR[23:16] == 8'h00) & (SNES_ADDR[15:5] == 11'h7FF);
+wire [7:0] VEC_DATA = vec_mem[SNES_ADDR[4:0]];
+`else
+wire VEC_HIT = 1'b0;
+wire [7:0] VEC_DATA = 8'h00;
+`endif
+
+assign SNES_DATA = (~SNES_READ & VEC_HIT) ? VEC_DATA
+                   :(~SNES_READ & HX_SIG_HIT) ? HX_SIG_DATA
                    :(r213f_enable & ~SNES_PARD) ? (r213f_forceread ? 8'bZ : r213fr)
                    :(r2100_enable & ~SNES_PAWR & r2100_forcewrite) ? r2100r
                    :(((~SNES_READ & ((~SNES_SNOOPPAWR_DATA_OE & ~SNES_SNOOPPARD_DATA_OE) | ~SNES_ROMSEL_EARLY)))
