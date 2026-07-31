@@ -81,3 +81,5 @@ fpga/cores/mixer/synth/*.sof
 fpga/cores/mixer/synth/*.done
 fpga/cores/mixer/synth/*.smsg
 synth/*.sld
+
+firmware/dev/qemu/build/

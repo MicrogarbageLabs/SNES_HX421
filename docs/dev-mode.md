@@ -206,17 +206,20 @@ first two need no emulator at all:
    ```
    (On this machine the toolchain is `C:\msys64\mingw64\bin\arm-none-eabi-gcc`; put `mingw64\bin` on
    PATH or `cc1` fails silently.)
-3. **QEMU — execution of real Thumb code, when installed.** `qemu-system-arm` on a Cortex-M4 machine
-   (e.g. `netduinoplus2`, an F405 — no F401 model exists, but the CPU/ABI match) runs the loader +
-   `crt0` + a game `.bin` as actual target code, with `printf` over semihosting. This is what
-   validates the *jump into the game region* and real newlib/AAPCS behaviour before hardware.
+3. **QEMU — execution of real Thumb code. LIVE.** `qemu-system-arm 11.0.0` on `netduinoplus2` (an
+   F405, Cortex-M4 — no F401 model exists, but the CPU/ABI match) runs the boundary as actual target
+   code. `firmware/dev/qemu/` is a self-contained bare-metal harness (own vector table, startup,
+   semihosting for console + exit, a mini `printf` — no newlib): a game binds the table and runs
+   through the firmware's indirect calls at the real 4-byte-pointer ABI, and prints `QEMU PASS`.
+   Build + run with `firmware/dev/qemu/run-qemu.sh`. This is the tier that will validate the loader's
+   *jump into the game region* before hardware.
    **Scope it honestly:** QEMU models the CPU, NVIC and memory — it does **not** emulate the STM32
    OTG_FS USB device, the SD peripheral, the FPGA or any real timing. USB CDC/MSC, the SD-ownership
    interlock, and everything on the FPGA/PSRAM side are **hardware-only** (the FXPak, screen/ear as
-   the diagnostic). QEMU is not installed here yet; tiers 1–2 are the current loop.
+   the diagnostic).
 
-So: edit -> host test (logic) -> arm cross-compile (target ABI) -> *when built,* QEMU (execution) ->
-FXPak (USB, SD, FPGA). Most iteration lives in the first two.
+So: edit -> host test (logic) -> arm cross-compile (target ABI) -> QEMU (execution) -> FXPak (USB,
+SD, FPGA). The first three run on this machine with no cart; only the last needs hardware.
 
 ## Mode state machine (summary)
 
