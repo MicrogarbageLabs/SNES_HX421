@@ -71,6 +71,25 @@ Groups are spaced (0x10 apart) so a new file op can land at 0x26 without disturb
 hands out the **game region's** heap, never firmware's — the two allocators must not share an arena,
 or a game leak corrupts the resident firmware.
 
+### Later (not yet): more of the runtime moves into firmware
+
+The same size argument that bakes in libc applies to everything a game repeatedly needs. As the
+platform settles, the firmware absorbs — each as a new append-only table group, so old binaries are
+unaffected:
+
+- **Game API** — the locked `mg_*` cart-side surface ([[game-api-decisions]], `docs/game-api.md`):
+  frame staging, sprites, palettes, input. The game calls it; the firmware and PSRAM implement it.
+- **Asset loading** — higher-level than raw `open/read`: load-and-decode of packed assets (the FMV
+  container, tile/CHR packs, the raycaster strip bake) straight into PSRAM, so a game hands over an
+  asset id, not a decode loop.
+- **FPGA HAL** — the register/DMA/mailbox choreography for the FPGA (staging chains, mixer channel
+  setup, collision registry, the BRAM-vector window) behind named calls, so a game never touches a
+  raw FPGA register and firmware can retune the hardware path without recompiling games.
+
+Each move shrinks the game `.bin` and widens the frozen ABI. **Design each group before it ships** —
+adding a slot is free, changing one after games bind to it is not. Deliberately deferred: get the
+loader, terminal and a trivial game working against the minimal table first, then grow it.
+
 ## Memory map: identical across dev and shipping firmware
 
 The dev firmware is fatter than a shipping one (it carries USB + MSC + FatFs + libc + terminal), so
