@@ -172,6 +172,21 @@ back on CDC-OUT; the same actions are reachable on the TV with the controller, u
 not block** — a game frame must never hitch waiting on a debug byte. Same rule as the WASAPI audio
 path: the producer never waits on the consumer.
 
+**Built** (`firmware/dev/hx421_term.{c,h}`, host-tested in `tools/hx421_term_test.c`, 21 checks). The
+terminal is **transport-agnostic**: it owns the TX ring, the RX line editor, command tokenizing, and
+the ANSI helpers, and knows nothing about USB. Bytes leave through a **sink callback** and arrive via
+`hx421_term_rx(byte)`. Two properties the host test pins down:
+
+- **Non-blocking drop.** A full ring drops and counts (`dropped`), never blocks the caller. The bytes
+  it keeps are the first ones; the overflow is surfaced, not silent.
+- **Back-pressure.** The sink returns how many bytes it accepted, so a busy 64-byte FS endpoint that
+  NAKs leaves the remainder queued for the next drain rather than losing it.
+
+The only target-only piece is the **CDC glue shim**: a `sink` that writes the CDC-ACM IN endpoint,
+and an interrupt/poll that feeds the OUT endpoint's bytes to `hx421_term_rx`. That shim needs the
+STM32 USB device stack and is the one part not host-testable — everything with logic is above it,
+tested on the host exactly like `hx421_stream`.
+
 ## PC parity: run the game in the emulator first
 
 [[armulator-project]] is a Cortex-M emulator. A game `.bin` can run in armulator against a **mocked
