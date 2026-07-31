@@ -20,11 +20,23 @@ CFLAGS="-Os -Wall -Wextra -std=c11 -mcpu=cortex-m4 -mthumb -ffreestanding -nostd
   "$here/game_blob.c" "$dev/hx421_gamert.c" -o "$out/game.elf"
 "$OBJCOPY" -O binary "$out/game.elf" "$out/game.bin"
 
-# game_main is forced first by the link script, so entry_off is 0. Verify.
+# game_main must be first (entry_off 0) AND at the frozen region base. Derive the
+# expected base from hx421_memmap.h so a map change without a link-script change
+# fails here rather than at run time.
+# preprocess the macro (an expression with u-suffixes), strip the suffixes, and
+# evaluate it with shell arithmetic (bash understands 0x hex)
+WANT_EXPR=$(arm-none-eabi-gcc -I"$dev" -E -P -x c - <<'EOF' | tr -d ' \r' | tr -d 'uU'
+#include "hx421_memmap.h"
+HX421_GAME_BASE
+EOF
+)
+WANT=$(( WANT_EXPR ))
+WANT_HEX=$(printf '%x' "$WANT")
 ENTRY=$(arm-none-eabi-nm "$out/game.elf" | awk '/ game_main$/ {print $1}')
-if [ "$ENTRY" != "20010000" ]; then
-  echo "WARN: game_main at $ENTRY, expected 20010000 (entry not first)"; exit 1
+if [ "$ENTRY" != "$WANT_HEX" ]; then
+  echo "FAIL: game_main at $ENTRY, frozen HX421_GAME_BASE is $WANT_HEX (memmap/link drift)"; exit 1
 fi
+echo "game linked at frozen HX421_GAME_BASE = 0x$WANT_HEX"
 
 # --- pack into .hxg (entry_off 0, bss 0: the game binds g_sys before reading) ---
 gcc -O2 -std=c11 -o "$out/mkhxg" "$repo/tools/hx421_mkhxg.c"

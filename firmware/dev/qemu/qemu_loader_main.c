@@ -5,6 +5,7 @@
  * relocated Thumb code. See docs/dev-mode.md step 3. */
 
 #include "hx421_loader.h"
+#include "hx421_memmap.h"
 #include "qemu_hostsys.h"
 
 void qh_write0(const char *s);
@@ -14,11 +15,12 @@ void qh_write0(const char *s);
 extern const uint8_t _binary_game_hxg_start[];
 extern const uint8_t _binary_game_hxg_end[];
 
-/* The game region: the high 64K of RAM, which link_m4_split.ld kept clear of
- * firmware. The game blob was linked to run exactly here. */
-#define GAME_BASE  ((void *)0x20010000u)
-#define GAME_SIZE  (64u * 1024u)
-#define GAME_STACK (4u * 1024u)
+/* The game region comes from the FROZEN map (hx421_memmap.h) — the same region
+ * the real firmware uses, so this test validates the production layout, not an
+ * arbitrary one. The game blob was linked to run at HX421_GAME_BASE. */
+#define GAME_BASE  ((void *)(uintptr_t)HX421_GAME_BASE)
+#define GAME_SIZE  HX421_GAME_SIZE
+#define GAME_STACK HX421_GAME_STACK
 
 int qemu_main(void) {
     qh_write0("hx421 RAM loader (qemu, cortex-m4)\n");

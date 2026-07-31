@@ -90,6 +90,35 @@ Each move shrinks the game `.bin` and widens the frozen ABI. **Design each group
 adding a slot is free, changing one after games bind to it is not. Deliberately deferred: get the
 loader, terminal and a trivial game working against the minimal table first, then grow it.
 
+## Frozen map (firmware/dev/hx421_memmap.h) — F401xC 64 KB
+
+```
+  0x20000000  +------------------------------+
+              |  FIRMWARE working set  32 KB |  USB, terminal, FatFs, streaming
+              |                              |  CONTROL (data is in PSRAM), baked-
+              |                              |  libc state, stack.
+  0x20008000  +------------------------------+
+              |  GAME REGION           32 KB |  code+rodata+data+bss+heap+stack,
+              |  (load == run, in place)     |  loaded from SD.  HX421_GAME_BASE.
+  0x2000FFFF  +------------------------------+
+```
+
+`hx421_memmap.h` is the single source of truth (`HX421_GAME_BASE`/`_SIZE`/`_STACK`); the loader, the
+firmware link and the game link all derive from it, and `run-qemu-loader.sh` asserts the game linked
+at `HX421_GAME_BASE` — so the three cannot drift, and the QEMU loader test validates the *production*
+map, not an arbitrary one.
+
+**Why 32/32 is comfortable, not tight.** With rich services (libc, and later the actor library, FMV
+routines, input, asset loading, 2D/3D hooks) resident ONCE in firmware and reached through the
+syscall table, the game binary stays tiny — measured ~100 bytes of overhead where a self-contained
+build is 7–31 KB. A game with little code fits a 16 KB/16 KB code/data split easily. So the game gets
+a roomy 32 KB and the firmware the other 32 KB, on both sides of a budget that stream data (in PSRAM)
+never touches.
+
+**A later F411 (128 KB) just extends the region** — raise `HX421_GAME_SIZE`. Growing it is backward
+compatible: a game built for 32 KB runs unchanged in a larger region; only shrinking below what a
+game was built against would break it.
+
 ## Memory map: identical across dev and shipping firmware
 
 The dev firmware is fatter than a shipping one (it carries USB + MSC + FatFs + libc + terminal), so

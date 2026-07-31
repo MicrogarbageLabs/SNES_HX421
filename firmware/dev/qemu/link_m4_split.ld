@@ -1,9 +1,10 @@
-/* link_m4_split.ld — firmware RAM capped at the low 64K so the high 64K
- * (0x20010000..0x2001FFFF) is free for the loaded game region. Same as
- * link_m4.ld otherwise. The embedded game .hxg rides in FLASH. */
+/* link_m4_split.ld — firmware RAM capped at the low 32K (HX421_FW_SIZE) so the
+ * game region at 0x20008000 (HX421_GAME_BASE, see hx421_memmap.h) stays clear.
+ * This mirrors the real F401xC 64K map: firmware low 32K, game high 32K. The
+ * embedded game .hxg rides in FLASH. */
 MEMORY {
   FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 1024K
-  RAM  (rwx) : ORIGIN = 0x20000000, LENGTH = 64K     /* firmware only */
+  RAM  (rwx) : ORIGIN = 0x20000000, LENGTH = 32K     /* firmware working set */
 }
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 
