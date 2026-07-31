@@ -42,8 +42,15 @@ hardware, and keeps the PC-dev path bit-for-bit with the FXPak.
   booted to `$8000` from the fabric, not the ROM's `$FFFC`).
 - **Step 2a — write window: HARDWARE-CONFIRMED** (`h6_vecwrite.sfc` → green: the SNES
   wrote `vec_mem[0]=$AB` via `$3F:F020` and read it back via `$3F:F040`).
-- **Step 2b — widen + custom NMI handler: built** (`h6_vecnmi.sfc` installs an NMI
-  handler into `vec_mem[$FFEA]`, sets widen, enables NMI → the handler cycles the
-  backdrop color each vblank, fetched from the fabric vector). *Pending bench.*
+- **Step 2b — widen + custom NMI handler: HARDWARE-CONFIRMED** (2026-07-30, `h6_vecnmi.sfc`
+  → cycling backdrop). The NMI handler ran every vblank with its vector fetched from
+  `vec_mem[$FFEA]`, not the ROM's `$FFEA`: widen serves the WHOLE `$FFE0-$FFFF` region from
+  the fabric, and the 65816 took the custom interrupt entry from BRAM. A frozen or black
+  screen would have meant the fabric vector did not take and it fell back to the ROM.
+  Pre-flight before the bench: the packed `fpga_obc1_vecnmi.bi3` decodes byte-for-byte to
+  `fpga/build/h2_base/output_files/main.rbf` (same SHA-256), so the flashed core was
+  provably the built step-2b bitstream.
 - **Step 3** — MCU copies each ROM's real vectors into `vec_mem` at load (firmware), so
-  the reset default is per-ROM and the whole thing is transparent to any ROM.
+  the reset default is per-ROM and the whole thing is transparent to any ROM. This is the
+  step that turns the mechanism from a test fixture into something every game gets for free;
+  it is firmware, not another bench ROM.
