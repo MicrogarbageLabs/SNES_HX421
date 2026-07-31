@@ -206,5 +206,23 @@ runtimetest: $(RUNTIME_TESTS)
 	if [ $$fail -eq 0 ]; then echo "ALL RUNTIME SUITES PASSED"; else echo "SOME RUNTIME SUITES FAILED"; fi; \
 	exit $$fail
 
+# ---- armcheck: tier 2 (docs/dev-mode.md) — cross-compile the dev-mode firmware
+# for the REAL Cortex-M4 target, so the append-only ABI _Static_asserts evaluate
+# at sizeof(void*)==4. The host suites only prove the 64-bit layout; this proves
+# the layout the cart sees. Needs arm-none-eabi-gcc (put msys mingw64/bin on PATH
+# or cc1 fails silently).
+ARM_CC    ?= arm-none-eabi-gcc
+ARM_FLAGS := -c -Os -Wall -Wextra -std=c11 -mcpu=cortex-m4 -mthumb -ffreestanding -I$(FWDEV_DIR)
+FWDEV_SRC := $(FWDEV_DIR)/hx421_gamert.c $(FWDEV_DIR)/hx421_term.c
+
+.PHONY: armcheck
+armcheck:
+	@mkdir -p $(BUILD)
+	@for s in $(FWDEV_SRC); do \
+	  echo "arm: $$s"; \
+	  $(ARM_CC) $(ARM_FLAGS) $$s -o $(BUILD)/`basename $$s .c`.arm.o || exit 1; \
+	done
+	@echo "ARM CROSS-COMPILE OK — target 32-bit ABI validated"
+
 clean:
 	rm -rf $(BUILD)

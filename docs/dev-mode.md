@@ -187,13 +187,36 @@ and an interrupt/poll that feeds the OUT endpoint's bytes to `hx421_term_rx`. Th
 STM32 USB device stack and is the one part not host-testable — everything with logic is above it,
 tested on the host exactly like `hx421_stream`.
 
-## PC parity: run the game in the emulator first
+## Testing without the cart: three tiers
 
-[[armulator-project]] is a Cortex-M emulator. A game `.bin` can run in armulator against a **mocked
-syscall table** on the PC, with `printf` to stdout and the coprocessor calls stubbed or bridged to
-the existing `hx421.dll` — the same "PC parity is the debugging lifeline" pattern the DLL/bsnes loop
-gives the SNES side. Edit -> build -> run in armulator -> *then* drag to hardware. Most iteration
-never touches the cart.
+There is no bespoke emulator for this. (An earlier draft of this doc named "armulator" as if it
+existed — it was only a brainstorm, never begun.) Three real tiers cover progressively more, and the
+first two need no emulator at all:
+
+1. **Host (x86-64) tests — algorithm validation, instant.** The `make runtimetest` suites
+   (`hx421_syscall_test`, `hx421_term_test`, …). Fast, but pointers are 8 bytes here, so struct
+   layout and the ABI offset asserts are only proven for the *host*, not the target.
+2. **`arm-none-eabi-gcc` cross-compile — the REAL 32-bit ARM ABI, still no emulator.** Compiling the
+   firmware/dev modules for `cortex-m4` makes the append-only `_Static_assert`s evaluate against
+   `sizeof(void*) == 4`: `Hx421Sys` is exactly 56 bytes (14 slots), the layout the cart actually
+   sees. This is the tier the host test cannot give, and it costs one compile:
+   ```
+   arm-none-eabi-gcc -c -Os -std=c11 -mcpu=cortex-m4 -mthumb -ffreestanding \
+     -Ifirmware/dev firmware/dev/hx421_gamert.c firmware/dev/hx421_term.c
+   ```
+   (On this machine the toolchain is `C:\msys64\mingw64\bin\arm-none-eabi-gcc`; put `mingw64\bin` on
+   PATH or `cc1` fails silently.)
+3. **QEMU — execution of real Thumb code, when installed.** `qemu-system-arm` on a Cortex-M4 machine
+   (e.g. `netduinoplus2`, an F405 — no F401 model exists, but the CPU/ABI match) runs the loader +
+   `crt0` + a game `.bin` as actual target code, with `printf` over semihosting. This is what
+   validates the *jump into the game region* and real newlib/AAPCS behaviour before hardware.
+   **Scope it honestly:** QEMU models the CPU, NVIC and memory — it does **not** emulate the STM32
+   OTG_FS USB device, the SD peripheral, the FPGA or any real timing. USB CDC/MSC, the SD-ownership
+   interlock, and everything on the FPGA/PSRAM side are **hardware-only** (the FXPak, screen/ear as
+   the diagnostic). QEMU is not installed here yet; tiers 1–2 are the current loop.
+
+So: edit -> host test (logic) -> arm cross-compile (target ABI) -> *when built,* QEMU (execution) ->
+FXPak (USB, SD, FPGA). Most iteration lives in the first two.
 
 ## Mode state machine (summary)
 
