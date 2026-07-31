@@ -16,8 +16,8 @@ mkdir -p "$out"
 ELF="$out/qemu_syscall.elf"
 arm-none-eabi-gcc -Os -Wall -Wextra -std=c11 \
   -mcpu=cortex-m4 -mthumb -ffreestanding -nostdlib -nostartfiles \
-  -T "$here/link_m4.ld" -I"$dev" \
-  "$here/startup_m4.c" "$here/qemu_syscall_main.c" "$dev/hx421_gamert.c" \
+  -T "$here/link_m4.ld" -I"$dev" -I"$here" \
+  "$here/startup_m4.c" "$here/qemu_syscall_main.c" "$here/qemu_hostsys.c" "$dev/hx421_gamert.c" \
   -o "$ELF"
 
 # Semihosting lands on stderr; capture both and look for the verdict.

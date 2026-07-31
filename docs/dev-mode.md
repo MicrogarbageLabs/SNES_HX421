@@ -241,7 +241,15 @@ SD, FPGA). The first three run on this machine with no cart; only the last needs
 2. **CDC terminal + non-blocking debug print** — the smallest useful loop: firmware boots, prints a
    banner to PuTTY, echoes commands. No game loading yet.
 3. **RAM loader** — `run <file>`: read a `.bin` from SD into the game region, jump to it, catch its
-   `abort()`. Prove it with a trivial game that just `printf`s and reads the pad.
+   `abort()`. **Built** (`firmware/dev/hx421_loader.{c,h}`, packer `tools/hx421_mkhxg.c`). A game file
+   is `[Hx421GameHeader][image]`, the image linked to run AT the region base (load == run, so only
+   bss needs clearing, no relocation). Split so the logic is host-tested (`hx421_loader_test.c`,
+   16 checks: validation, byte-exact placement, bss zero, and every reject — bad magic, wrong ABI,
+   short file, entry out of range, over-region, and an overflow-safe bounds check) and the
+   **load-and-jump is proven under QEMU** (`run-qemu-loader.sh`): a game linked separately at the
+   region base, packed by `mkhxg`, embedded in the firmware, copied into the region and jumped to —
+   the loaded code runs through the table and prints `QEMU PASS`. That is the whole dev loop in
+   miniature.
 4. **MSC drive + the SD-ownership interlock** — drag-drop replaces manual SD swaps.
 5. **Freeze the memory map** against the dev firmware; document the region base/size games link to.
 6. **Stream arbiter integration** — the resident audio/FMV path running underneath a loaded game.

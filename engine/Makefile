@@ -191,10 +191,16 @@ $(BUILD)/hx421_term_test$(EXE): $(TOOLS_DIR)/hx421_term_test.c $(FWDEV_DIR)/hx42
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(FWDEV_DIR) $^ -o $@ $(LDFLAGS)
 
+# The RAM loader's logic: header validation + placement (copy + bss zero) + all
+# reject paths. The load-and-jump is proven under QEMU (real Thumb execution).
+$(BUILD)/hx421_loader_test$(EXE): $(TOOLS_DIR)/hx421_loader_test.c $(FWDEV_DIR)/hx421_loader.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(FWDEV_DIR) $^ -o $@ $(LDFLAGS)
+
 RUNTIME_TESTS := $(BUILD)/hx421_metatile_test$(EXE) $(BUILD)/hx421_raster_test$(EXE) \
                  $(BUILD)/hx421_scene3d_test$(EXE) $(BUILD)/hx421_collide_test$(EXE) \
                  $(BUILD)/hx421_mask_test$(EXE) $(BUILD)/hx421_syscall_test$(EXE) \
-                 $(BUILD)/hx421_term_test$(EXE)
+                 $(BUILD)/hx421_term_test$(EXE) $(BUILD)/hx421_loader_test$(EXE)
 
 .PHONY: runtimetest
 runtimetest: $(RUNTIME_TESTS)
