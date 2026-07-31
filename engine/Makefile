@@ -177,9 +177,17 @@ $(BUILD)/hx421_mask_test$(EXE): $(TOOLS_DIR)/hx421_mask_test.c $(RUNTIME_DIR)/hx
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) $^ -o $@ $(LDFLAGS)
 
+# The dev-mode firmware<->game syscall boundary. Host-tested like the audio
+# firmware modules; the ABI header's append-only _Static_asserts also compile
+# here, so a reordered slot fails this build before any game is ever loaded.
+FWDEV_DIR := ../firmware/dev
+$(BUILD)/hx421_syscall_test$(EXE): $(TOOLS_DIR)/hx421_syscall_test.c $(FWDEV_DIR)/hx421_gamert.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(FWDEV_DIR) $^ -o $@ $(LDFLAGS)
+
 RUNTIME_TESTS := $(BUILD)/hx421_metatile_test$(EXE) $(BUILD)/hx421_raster_test$(EXE) \
                  $(BUILD)/hx421_scene3d_test$(EXE) $(BUILD)/hx421_collide_test$(EXE) \
-                 $(BUILD)/hx421_mask_test$(EXE)
+                 $(BUILD)/hx421_mask_test$(EXE) $(BUILD)/hx421_syscall_test$(EXE)
 
 .PHONY: runtimetest
 runtimetest: $(RUNTIME_TESTS)
