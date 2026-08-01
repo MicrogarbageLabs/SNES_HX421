@@ -145,7 +145,73 @@ what leaves room for a large game region even on the 64K part. Pin the game size
 firmware and freeze it; then it is portable to any firmware build. (See the STM32F401 64K-vs-96K
 question in [[hardware-budget]] — the RAM part only sets how generous the frozen region can be.)
 
-## USB: composite CDC + MSC
+## Reality check: most of the transport is ALREADY in the stock firmware
+
+Building the stock `firmware.stm` (`config-mk3-stm32`) and reading its USB code settles what actually
+has to be written vs. what's already there:
+
+- **CDC-ACM virtual serial: present.** `usbdesc.c` declares `bDeviceClass = COMMUNICATIONS`, two
+  interfaces (control + data), bulk IN/OUT + a notification endpoint. It's the transport we designed,
+  already working — usb2snes runs over it.
+- **File transfer over USB: present.** The usb2snes protocol (`usbinterface.c`) has `GET`/`PUT`/`VGET`/
+  `VPUT`/`LS`/`BOOT`, and `PUT` does `f_write()` straight to the SD. So **pushing a `game.hxg` to the
+  cart's SD already works** through existing PC tools (usb2snes / QUsb2Snes / SNI) — no MSC, no new
+  firmware.
+- **libc: present.** The firmware links newlib; `printf`/stdio/`malloc` are in the image already.
+- **FatFs, SD driver, boot trigger: present** (`ff.c`, `sdnative.c`, the `BOOT` opcode).
+
+So the **MSC drag-drop drive and the PuTTY terminal are UX polish, not requirements.** The functional
+dev loop needs only three *additions* to the stock firmware — the syscall TABLE (its implementations
+already exist), the RAM loader (QEMU-proven), and the game region (linker) — plus a trigger, which can
+reuse the existing `BOOT` opcode.
+
+```
+  stock firmware  +  syscall table  +  loader  +  game region
+                                              |
+     usb2snes PUT (existing PC tool) pushes game.hxg to SD
+                                              |
+     trigger (BOOT opcode / small custom op) -> loader copies to region, jumps
+```
+
+Debug output rides the SNES screen (`snes/textmode.inc`) or the CDC. MSC and a dedicated PuTTY
+terminal are **phase 2**, added once the core loop runs.
+
+## Populating the table from the firmware's existing services
+
+The syscall table is the one genuinely new integration, and it is almost all *wiring* — the
+implementations behind each slot already exist in the stock firmware. Sketch of where each group binds:
+
+```
+  slot          firmware backing (stock sd2snes)                    new code
+  ----------------------------------------------------------------------------------------
+  abi_version   a constant                                          ~0
+  yield         return to the firmware main loop / USB+SD service   thin
+  sys_abort     show error on SNES screen (textmode.inc) + halt     thin
+  print/printf  newlib vsnprintf -> a sink (SNES screen or CDC)     thin adapter
+  term_ctrl     ANSI emit over the same sink                        thin
+  open/read/    FatFs f_open/f_read/f_write/f_lseek/f_close on a    handle table +
+   write/seek/    game-scoped directory                             path sandboxing
+   close
+  malloc/free   a game-region allocator (NOT firmware's newlib      a small arena
+                 heap — see the arena rule below)                    allocator
+  input_read    the firmware's existing joypad read path            thin
+  copro_*       the mg_* coprocessor calls (staging, mixer, ...)    later table group
+```
+
+Two rules the wiring must hold to:
+
+- **`malloc` hands out the GAME region's heap, never firmware's.** The game .bin runs in the frozen
+  region; its heap must be an arena carved from that region, so a game leak or overrun can't corrupt
+  the resident firmware's newlib heap. This means the table's `mem_alloc` is a *small game-scoped
+  allocator*, not a forward to firmware `malloc`.
+- **File paths are sandboxed.** `open` prefixes a game directory (e.g. `/sd2snes/hx421/<game>/`) so a
+  loaded game can't read or clobber firmware/menu/core files on the same card. The firmware owns the
+  policy; the game sees only its own tree.
+
+Everything else is a one-line adapter from the table slot to the function the firmware already has.
+That is the whole point of baking libc in: the code exists once, resident, and the table is the seam.
+
+## USB: composite CDC + MSC (phase 2)
 
 One composite device gives both the drag-drop drive and the live terminal.
 

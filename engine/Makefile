@@ -197,10 +197,17 @@ $(BUILD)/hx421_loader_test$(EXE): $(TOOLS_DIR)/hx421_loader_test.c $(FWDEV_DIR)/
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(FWDEV_DIR) $^ -o $@ $(LDFLAGS)
 
+# The syscall-table builder's new logic: the game arena, the path sandbox, and
+# the slot/handle wiring, against a mocked firmware backend.
+$(BUILD)/hx421_sysimpl_test$(EXE): $(TOOLS_DIR)/hx421_sysimpl_test.c $(FWDEV_DIR)/hx421_sysimpl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(FWDEV_DIR) $^ -o $@ $(LDFLAGS)
+
 RUNTIME_TESTS := $(BUILD)/hx421_metatile_test$(EXE) $(BUILD)/hx421_raster_test$(EXE) \
                  $(BUILD)/hx421_scene3d_test$(EXE) $(BUILD)/hx421_collide_test$(EXE) \
                  $(BUILD)/hx421_mask_test$(EXE) $(BUILD)/hx421_syscall_test$(EXE) \
-                 $(BUILD)/hx421_term_test$(EXE) $(BUILD)/hx421_loader_test$(EXE)
+                 $(BUILD)/hx421_term_test$(EXE) $(BUILD)/hx421_loader_test$(EXE) \
+                 $(BUILD)/hx421_sysimpl_test$(EXE)
 
 .PHONY: runtimetest
 runtimetest: $(RUNTIME_TESTS)
@@ -219,7 +226,8 @@ runtimetest: $(RUNTIME_TESTS)
 # or cc1 fails silently).
 ARM_CC    ?= arm-none-eabi-gcc
 ARM_FLAGS := -c -Os -Wall -Wextra -std=c11 -mcpu=cortex-m4 -mthumb -ffreestanding -I$(FWDEV_DIR)
-FWDEV_SRC := $(FWDEV_DIR)/hx421_gamert.c $(FWDEV_DIR)/hx421_term.c
+FWDEV_SRC := $(FWDEV_DIR)/hx421_gamert.c $(FWDEV_DIR)/hx421_term.c \
+             $(FWDEV_DIR)/hx421_loader.c $(FWDEV_DIR)/hx421_sysimpl.c
 
 .PHONY: armcheck
 armcheck:
