@@ -98,6 +98,18 @@ static const Hx421FwBackend g_backend = {
     bk_open, bk_read, bk_write, bk_seek, bk_close, bk_input
 };
 
+/* cursor over the embedded .hxg, returning short chunks like an SD read */
+static const uint8_t *cur_p, *cur_end;
+static uint32_t blob_read(void *ctx, void *dst, uint32_t n) {
+    (void)ctx;
+    uint32_t avail = (uint32_t)(cur_end - cur_p);
+    if (n > avail) n = avail;
+    if (n > 13) n = 13;                 /* deliberately short, to test the fill loop */
+    for (uint32_t i = 0; i < n; ++i) ((uint8_t *)dst)[i] = cur_p[i];
+    cur_p += n;
+    return n;
+}
+
 /* the game heap arena: carved from the top of the game region, below the stack,
  * exactly as the firmware would. 4K here. */
 #define ARENA_SIZE (4u * 1024u)
@@ -114,10 +126,12 @@ int qemu_main(void) {
     Hx421Sys table;
     hx421_sys_build(&impl, &g_backend, arena_ptr(), ARENA_SIZE, "/sd2snes/hx421/mygame", &table);
 
-    /* Load and run the game through that table. */
-    const uint32_t len = (uint32_t)(_binary_game_hxg_end - _binary_game_hxg_start);
-    Hx421LoadResult r = hx421_loader_run(GAME_BASE, GAME_SIZE, HX421_GAME_STACK,
-                                         _binary_game_hxg_start, len, &table);
+    /* Load and run the game through that table, via the STREAMING path — the
+     * firmware's actual method (read straight into the region, never a full-file
+     * buffer beside it). A cursor over the embedded blob stands in for f_read. */
+    cur_p = _binary_game_hxg_start; cur_end = _binary_game_hxg_end;
+    Hx421LoadResult r = hx421_loader_run_stream(GAME_BASE, GAME_SIZE, HX421_GAME_STACK,
+                                                blob_read, 0, &table);
 
     int ok = 1;
     if (r != HX421_LOAD_OK)                        { qh_write0("QEMU FAIL: load != OK\n"); ok = 0; }

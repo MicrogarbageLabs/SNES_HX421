@@ -26,6 +26,73 @@ static uint32_t make_file(uint8_t *out, uint32_t magic, uint32_t abi,
     return (uint32_t)sizeof h + image_bytes;
 }
 
+/* a cursor read_fn over a byte buffer, modelling f_read from SD */
+typedef struct { const uint8_t *buf; uint32_t len, pos; uint32_t cap_per_call; } Cursor;
+static uint32_t cur_read(void *ctx, void *dst, uint32_t n) {
+    Cursor *c = (Cursor *)ctx;
+    if (c->pos + n > c->len) n = c->len - c->pos;
+    if (c->cap_per_call && n > c->cap_per_call) n = c->cap_per_call;   /* short reads */
+    memcpy(dst, c->buf + c->pos, n);
+    c->pos += n;
+    return n;
+}
+
+static void test_stream(void) {
+    static uint8_t file[512];
+    static uint8_t region[256];
+    const uint32_t REGION = sizeof region;
+
+    uint32_t flen = make_file(file, HX421_GAME_MAGIC, HX421_ABI_MAJOR,
+                              /*entry*/ 8, /*load*/ 96, /*bss*/ 16, /*image*/ 96);
+
+    /* good stream: image lands byte-exact, bss zeroed, entry reported */
+    memset(region, 0xEE, sizeof region);
+    Cursor c = { file, flen, 0, 0 };
+    uint32_t entry = 0xFFFF;
+    ck(hx421_loader_place_stream(region, REGION, 16, cur_read, &c, &entry) == HX421_LOAD_OK,
+       "streaming place succeeds");
+    ck(entry == 8, "streaming reports the entry offset");
+    int copy_ok = 1;
+    for (uint32_t i = 0; i < 96; ++i) if (region[i] != (uint8_t)(i + 1)) { copy_ok = 0; break; }
+    ck(copy_ok, "streamed image lands in the region byte-exact");
+    int bss_ok = 1;
+    for (uint32_t i = 96; i < 96 + 16; ++i) if (region[i] != 0) { bss_ok = 0; break; }
+    ck(bss_ok, "streaming zeroes bss");
+
+    /* a read_fn that returns partial chunks (as a real SD/FatFs read can) must
+     * still load correctly — place_stream loops the read until the span is full.
+     * 7-byte chunks straddle both the 32-byte header and the 96-byte image. */
+    flen = make_file(file, HX421_GAME_MAGIC, HX421_ABI_MAJOR, 8, 96, 16, 96);
+    c = (Cursor){ file, flen, 0, 7 };
+    memset(region, 0xEE, sizeof region);
+    ck(hx421_loader_place_stream(region, REGION, 16, cur_read, &c, &entry) == HX421_LOAD_OK,
+       "a chunked (short-returning) read_fn still loads — the loader fills the span");
+    copy_ok = 1;
+    for (uint32_t i = 0; i < 96; ++i) if (region[i] != (uint8_t)(i + 1)) { copy_ok = 0; break; }
+    ck(copy_ok, "chunked read reassembles the image byte-exact");
+
+    /* truncated file: header says load 96 but only 32 image bytes present */
+    flen = make_file(file, HX421_GAME_MAGIC, HX421_ABI_MAJOR, 8, 96, 0, /*image*/ 32);
+    c = (Cursor){ file, flen, 0, 0 };
+    ck(hx421_loader_place_stream(region, REGION, 16, cur_read, &c, &entry) == HX421_LOAD_SHORT,
+       "a truncated stream is SHORT");
+
+    /* a header-only-short stream */
+    c = (Cursor){ file, 8, 0, 0 };   /* fewer bytes than the header */
+    ck(hx421_loader_place_stream(region, REGION, 16, cur_read, &c, &entry) == HX421_LOAD_SHORT,
+       "a stream shorter than the header is SHORT");
+
+    /* bad magic / ABI reject before any region write */
+    flen = make_file(file, 0xDEADBEEF, HX421_ABI_MAJOR, 8, 96, 0, 96);
+    c = (Cursor){ file, flen, 0, 0 };
+    ck(hx421_loader_place_stream(region, REGION, 16, cur_read, &c, &entry) == HX421_LOAD_BAD_MAGIC,
+       "streaming rejects bad magic");
+    flen = make_file(file, HX421_GAME_MAGIC, HX421_ABI_MAJOR + 1, 8, 96, 0, 96);
+    c = (Cursor){ file, flen, 0, 0 };
+    ck(hx421_loader_place_stream(region, REGION, 16, cur_read, &c, &entry) == HX421_LOAD_ABI,
+       "streaming rejects a wrong ABI");
+}
+
 int main(void) {
     printf("hx421 loader tests\n");
     static uint8_t file[512];
@@ -90,6 +157,9 @@ int main(void) {
     flen = make_file(file, HX421_GAME_MAGIC, HX421_ABI_MAJOR, 4, /*load*/ 64, /*bss*/ 0xFFFFFF00u, 64);
     ck(hx421_loader_check(file, flen, REGION, STACK, 0) == HX421_LOAD_TOO_BIG,
        "a huge bss is rejected without integer overflow");
+
+    /* ---- streaming place: read straight into the region, never buffered ---- */
+    test_stream();
 
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

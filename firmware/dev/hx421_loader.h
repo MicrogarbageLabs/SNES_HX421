@@ -63,4 +63,20 @@ Hx421LoadResult hx421_loader_place(void *region, uint32_t region_size, uint32_t 
 Hx421LoadResult hx421_loader_run(void *region, uint32_t region_size, uint32_t reserve_stack,
                                  const void *file, uint32_t file_len, const Hx421Sys *sys);
 
+/* Read up to n bytes into dst; return the count actually read (< n at EOF). */
+typedef uint32_t (*Hx421ReadFn)(void *ctx, void *dst, uint32_t n);
+
+/* STREAMING place: read the header, validate, read the image STRAIGHT INTO the
+ * region, zero bss. Does NOT jump. The whole .hxg is never held in RAM beside
+ * the region — required on the 64 KB part, where a 32 KB file buffer and the
+ * 32 KB game region cannot coexist. This is the data path the firmware uses
+ * (read = a FatFs wrapper); host-tested. A short read at any stage is SHORT. */
+Hx421LoadResult hx421_loader_place_stream(void *region, uint32_t region_size, uint32_t reserve_stack,
+                                          Hx421ReadFn read, void *read_ctx, uint32_t *entry_off_out);
+
+/* place_stream() then jump — the firmware convenience. Jump runs real code, so
+ * this is QEMU-proven, not host-tested. */
+Hx421LoadResult hx421_loader_run_stream(void *region, uint32_t region_size, uint32_t reserve_stack,
+                                        Hx421ReadFn read, void *read_ctx, const Hx421Sys *sys);
+
 #endif /* HX421_LOADER_H */
