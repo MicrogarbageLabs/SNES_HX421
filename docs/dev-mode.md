@@ -363,29 +363,42 @@ SD, FPGA). The first three run on this machine with no cart; only the last needs
    objects compile under the fork's strict `-Werror` (incl. `-Werror=misleading-indentation`)
    against the real `ff.h`/uart headers, and every firmware symbol they need
    (`f_open`/`f_read`/`f_write`/`f_lseek`/`f_close`, `uart_putc`, `strlen`) resolves in the
-   firmware ELF. The load trigger (a call site for `hx421_fw_run_game`) is step 7 — until then
-   `--gc-sections` drops the unreferenced entry, which is expected.
-5. **MSC drive + the SD-ownership interlock** — drag-drop replaces manual SD swaps.
-6. **Freeze the memory map** against the dev firmware; document the region base/size games link to.
+   firmware ELF.
+5. **Load trigger + region carve** — **Done.** The CLI gains a `run <file.hxg>` command
+   (`cmd_run` → `hx421_fw_run_game`) so a game loads over the serial console, and the linker RAM is
+   capped so the game region is genuinely free (see the map below). With the trigger referencing the
+   chain, `--gc-sections` keeps it: `cmd_run`, `hx421_fw_run_game`, `hx421_loader_run_stream`,
+   `hx421_sys_build` are all `T` in the final ELF. The trigger (`cli.c`), the carve
+   (`stm32f401.ld`), and the Makefile `SRC` registration all live in
+   `firmware/dev/sd2snes-devmode.patch`; `build-fw.sh` copies our sources into the submodule and
+   applies the patch idempotently, then builds `config-mk3-stm32`. Source-of-truth pattern (as for
+   bsnes/Mgapi) — nothing is committed into the submodule. **This firmware is flashable.** Open
+   caveat: `fw_yield` is still a stub, so USB/CDC is not serviced *during* a game's run — use games
+   that return for now; a cooperative yield to the USB service loop is the next refinement.
+6. **MSC drive + the SD-ownership interlock** — drag-drop replaces manual SD swaps.
 7. **Stream arbiter integration** — the resident audio/FMV path running underneath a loaded game.
 
-## Memory-map caveat: the game region collides with the USB buffers
+## Memory map (measured against the real firmware, not the paper map)
 
 The frozen map (`hx421_memmap.h`) puts the game region at `0x20008000–0x2000FFFF` — the top 32K of
-the F401's 64K SRAM. But the stock firmware does *not* leave that half free:
+the F401's 64K SRAM. Reading the *built* ELF (`arm-none-eabi-objdump -h`, not the linker script)
+shows this is clean; an earlier worry that `.ahbram` sat inside the region was a **misremembered
+address**. The real layout:
 
-- `.ahbram` (marked `IN_AHBRAM`, the USB OTG buffers, ~9K) is an **LPC concept** — the STM32 linker
-  script (`stm32f401.ld`) has no `ahbram` MEMORY region, so on this build it becomes an **orphan
-  section that GNU ld places at ~`0x2000C000`** — squarely inside the naive game region.
-- The **stack** is `PROVIDE(__stack = ORIGIN(ram) + LENGTH(ram))` — the very top of RAM
-  (`0x2000FFF0`), also inside the region.
+| section | range | note |
+|---|---|---|
+| `.data`   | `0x20000070–0x20000474` | |
+| `.ahbram` | `0x20000474–0x20002794` | USB OTG buffers — **low**, well below the region |
+| `.bss`    | `0x20002794–0x2000577C` | grows to ~`0x2000577C` once `hx421_fw`'s FIL pool links in |
+| heap      | grows **up** from `__bss_end__` | only transient FatFs LFN buffers (~512 B), freed at once |
+| stack     | grows **down** from `__stack` | |
 
-So carving the game region is **not** a one-line linker cap. It needs either (a) the game region
-moved below `.ahbram` (e.g. a smaller region at `0x20008000–0x2000BFFF`, 16K), or (b) `.ahbram` +
-stack explicitly relocated low so the top 32K is genuinely free — which touches USB and must be
-re-tested on hardware. This is why `build-fw.sh` does **not** cap the linker RAM: the build proves
-the *code* is correct and linkable; the *region reservation* is deferred to step 6, done against the
-real firmware layout, not a paper map.
+All static data ends ~`0x2000577C`, so the region is clear of `.data`/`.bss`/`.ahbram`. The only
+things that would grow into it are the firmware heap and stack — so the carve is one line:
+`stm32f401.ld` RAM `LENGTH` `0x0ff90 → 0x07f90`, putting `__stack` (and the heap ceiling) at
+`0x20008000`. That leaves the firmware ~10.4K of heap+stack (static-end → `0x20008000`), ample given
+its ~512 B transient heap and few-KB stack. During a game's run the firmware isn't allocating (it
+jumped to the game, which uses its own arena), so nothing contends for the region.
 
 ## Relationship to the audio player
 

@@ -1,0 +1,84 @@
+diff --git a/src/Makefile b/src/Makefile
+index 034cd96..808dc61 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -83,6 +83,7 @@ SRC += cli.c ymodem.c rle.c msu1.c crc16.c sysinfo.c
+ SRC += cfg.c cheat.c yaml.c savestate.c sgb.c hwinfo.c
+ 
+ SRC += usbdesc.c usbcore.c usbuser.c cdcuser.c usbinterface.c
++SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c
+ 
+ # List Assembler source files here.
+ #     Make them always end in a capital .S.  Files ending in a lowercase .s
+diff --git a/src/cli.c b/src/cli.c
+index 558c80a..656cff7 100644
+--- a/src/cli.c
++++ b/src/cli.c
+@@ -46,6 +46,7 @@
+ #include "cic.h"
+ #include "ymodem.h"
+ #include "rtc.h"
++#include "hx421_fw.h"      /* HX-421 dev-mode: load-and-run a RAM game */
+ 
+ #include "cli.h"
+ 
+@@ -57,8 +58,8 @@ static char *curchar;
+ 
+ /* Word lists */
+ static char command_words[] =
+-  "cd\0reset\0sreset\0dir\0ls\0test\0exit\0loadrom\0loadraw\0saveraw\0put\0rm\0mkdir\0d4\0vmode\0mapper\0settime\0time\0setfeature\0hexdump\0w8\0w16\0memset\0cheat\0fpgaconf\0chipfeat\0bsregs\0gameloop\0dacboost\0cat\0mv\0";
+-enum { CMD_CD = 0, CMD_RESET, CMD_SRESET, CMD_DIR, CMD_LS, CMD_TEST, CMD_EXIT, CMD_LOADROM, CMD_LOADRAW, CMD_SAVERAW, CMD_PUT, CMD_RM, CMD_MKDIR, CMD_D4, CMD_VMODE, CMD_MAPPER, CMD_SETTIME, CMD_TIME, CMD_SETFEATURE, CMD_HEXDUMP, CMD_W8, CMD_W16, CMD_MEMSET, CMD_CHEAT, CMD_FPGACONF, CMD_CHIPFEAT, CMD_BSREGS, CMD_GAMELOOP, CMD_DACBOOST, CMD_CAT, CMD_MV };
++  "cd\0reset\0sreset\0dir\0ls\0test\0exit\0loadrom\0loadraw\0saveraw\0put\0rm\0mkdir\0d4\0vmode\0mapper\0settime\0time\0setfeature\0hexdump\0w8\0w16\0memset\0cheat\0fpgaconf\0chipfeat\0bsregs\0gameloop\0dacboost\0cat\0mv\0run\0";
++enum { CMD_CD = 0, CMD_RESET, CMD_SRESET, CMD_DIR, CMD_LS, CMD_TEST, CMD_EXIT, CMD_LOADROM, CMD_LOADRAW, CMD_SAVERAW, CMD_PUT, CMD_RM, CMD_MKDIR, CMD_D4, CMD_VMODE, CMD_MAPPER, CMD_SETTIME, CMD_TIME, CMD_SETFEATURE, CMD_HEXDUMP, CMD_W8, CMD_W16, CMD_MEMSET, CMD_CHEAT, CMD_FPGACONF, CMD_CHIPFEAT, CMD_BSREGS, CMD_GAMELOOP, CMD_DACBOOST, CMD_CAT, CMD_MV, CMD_RUN };
+ 
+ /* ------------------------------------------------------------------------- */
+ /*   Parse functions                                                         */
+@@ -368,6 +369,24 @@ void cmd_put(void) {
+   }
+ }
+ 
++/* HX-421 dev-mode: load a packed .hxg from SD into the game region and run it.
++ * The game's own file syscalls are confined to a fixed dev sandbox. Blocks until
++ * the game returns (USB/CDC is not serviced during the run yet -- fw_yield is a
++ * stub -- so use games that return for now). */
++void cmd_run(void) {
++  if(*curchar == 0) {
++    printf("Usage: run <file.hxg>\n");
++    return;
++  }
++  printf("loading %s ...\n", curchar);
++  int r = hx421_fw_run_game(curchar, "/sd2snes/hx421");
++  if(r == 0) {
++    printf("game returned OK\n");
++  } else {
++    printf("load/run failed: %d\n", r);
++  }
++}
++
+ void cmd_rm(void) {
+   FRESULT res = f_unlink(curchar);
+   if(res) print_fresult(res, "Error %d removing %s", res, curchar);
+@@ -704,6 +723,10 @@ void cli_loop(void) {
+       case CMD_MV:
+         cmd_mv();
+         break;
++
++      case CMD_RUN:
++        cmd_run();
++        break;
+     }
+   }
+ }
+diff --git a/src/stm32f401.ld b/src/stm32f401.ld
+index 30ef99b..412314f 100644
+--- a/src/stm32f401.ld
++++ b/src/stm32f401.ld
+@@ -13,7 +13,7 @@ MEMORY
+ {
+   fwhdr  (r)   : ORIGIN = 0x0800c000, LENGTH = 0x00200 /* space for firmware header */
+   flash  (rx)  : ORIGIN = 0x0800c200, LENGTH = 0x33e00 /* leave room for bootldr + metadata */
+-  ram    (rwx) : ORIGIN = 0x20000070, LENGTH = 0x0ff90 /* leave room for serial number etc */
++  ram    (rwx) : ORIGIN = 0x20000070, LENGTH = 0x07f90 /* HX-421 dev-mode: cap at 0x20008000 so the top 32K (0x20008000-0x2000FFFF) is the game region; __stack + heap ceiling both land at 0x20008000, static data ends ~0x20004E44 */
+ }
+ 
+ SECTIONS

@@ -15,7 +15,11 @@
 # Usage:  sh firmware/dev/build-fw.sh
 set -e
 export PATH=/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH
-export TMPDIR=/c/mgtmp TMP=/c/mgtmp TEMP=/c/mgtmp
+# POSIX tools want a /c/... path; native Windows cc1/ld want a Windows path (else
+# they fall back to C:\WINDOWS\Temp, which is not writable). Set both.
+mkdir -p /c/mgtmp
+export TMPDIR=/c/mgtmp
+export TMP='C:/mgtmp' TEMP='C:/mgtmp'
 
 here=$(cd "$(dirname "$0")" && pwd)          # firmware/dev
 repo=$(cd "$here/../.." && pwd)              # repo root
@@ -27,12 +31,22 @@ cp "$here/hx421_loader.c" "$here/hx421_sysimpl.c" "$here/hx421_fw.c" "$src/"
 cp "$here/hx421_syscall.h" "$here/hx421_loader.h" "$here/hx421_sysimpl.h" \
    "$here/hx421_memmap.h" "$here/hx421_fw.h" "$src/"
 
-echo "=== register with the fork's SRC list (idempotent) ==="
-if ! grep -q "hx421_fw.c" "$src/Makefile"; then
-  sed -i '/^SRC += usbdesc.c/a SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c' "$src/Makefile"
-  echo "  appended SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c"
+echo "=== apply the firmware-tree patch (SRC list + cli 'run' trigger + linker carve) ==="
+# One patch does three things in the fork: registers our .c on the Makefile SRC
+# list, adds the `run <file.hxg>` CLI command (the load trigger), and caps the
+# linker RAM at 0x20008000 so the top 32K is the game region. Idempotent: skip if
+# already applied. The .h files were copied above, so cli.c's #include resolves.
+sub=$(cd "$src/.." && pwd)
+patch_file="$here/sd2snes-devmode.patch"
+if git -C "$sub" apply --check "$patch_file" 2>/dev/null; then
+  git -C "$sub" apply "$patch_file"
+  echo "  applied sd2snes-devmode.patch"
+elif git -C "$sub" apply --reverse --check "$patch_file" 2>/dev/null; then
+  echo "  already applied"
 else
-  echo "  already present"
+  echo "  !! patch neither applies nor is already applied — the submodule may have"
+  echo "     drifted from the pinned commit. Re-generate firmware/dev/sd2snes-devmode.patch."
+  exit 1
 fi
 
 echo "=== build firmware.stm ==="
