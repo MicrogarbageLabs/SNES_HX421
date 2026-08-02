@@ -353,9 +353,39 @@ SD, FPGA). The first three run on this machine with no cart; only the last needs
    region base, packed by `mkhxg`, embedded in the firmware, copied into the region and jumped to —
    the loaded code runs through the table and prints `QEMU PASS`. That is the whole dev loop in
    miniature.
-4. **MSC drive + the SD-ownership interlock** — drag-drop replaces manual SD swaps.
-5. **Freeze the memory map** against the dev firmware; document the region base/size games link to.
-6. **Stream arbiter integration** — the resident audio/FMV path running underneath a loaded game.
+4. **Firmware integration + build proof** — **Done.** The portable modules (`hx421_loader.c`,
+   `hx421_sysimpl.c`) plus the firmware glue (`hx421_fw.c`: backend adapters over FatFs +
+   `uart_putc`, and `hx421_fw_run_game()` tying `sys_build` → streaming loader together) build
+   *inside the sd2snes fork* and link into `firmware.stm`. `firmware/dev/build-fw.sh` is the
+   integration step: it copies our sources into the submodule's `src/`, registers them on the
+   Makefile `SRC` list idempotently, and builds `config-mk3-stm32`. This is the source-of-truth
+   pattern used for bsnes/Mgapi — nothing is committed into the submodule. Verified: all three
+   objects compile under the fork's strict `-Werror` (incl. `-Werror=misleading-indentation`)
+   against the real `ff.h`/uart headers, and every firmware symbol they need
+   (`f_open`/`f_read`/`f_write`/`f_lseek`/`f_close`, `uart_putc`, `strlen`) resolves in the
+   firmware ELF. The load trigger (a call site for `hx421_fw_run_game`) is step 7 — until then
+   `--gc-sections` drops the unreferenced entry, which is expected.
+5. **MSC drive + the SD-ownership interlock** — drag-drop replaces manual SD swaps.
+6. **Freeze the memory map** against the dev firmware; document the region base/size games link to.
+7. **Stream arbiter integration** — the resident audio/FMV path running underneath a loaded game.
+
+## Memory-map caveat: the game region collides with the USB buffers
+
+The frozen map (`hx421_memmap.h`) puts the game region at `0x20008000–0x2000FFFF` — the top 32K of
+the F401's 64K SRAM. But the stock firmware does *not* leave that half free:
+
+- `.ahbram` (marked `IN_AHBRAM`, the USB OTG buffers, ~9K) is an **LPC concept** — the STM32 linker
+  script (`stm32f401.ld`) has no `ahbram` MEMORY region, so on this build it becomes an **orphan
+  section that GNU ld places at ~`0x2000C000`** — squarely inside the naive game region.
+- The **stack** is `PROVIDE(__stack = ORIGIN(ram) + LENGTH(ram))` — the very top of RAM
+  (`0x2000FFF0`), also inside the region.
+
+So carving the game region is **not** a one-line linker cap. It needs either (a) the game region
+moved below `.ahbram` (e.g. a smaller region at `0x20008000–0x2000BFFF`, 16K), or (b) `.ahbram` +
+stack explicitly relocated low so the top 32K is genuinely free — which touches USB and must be
+re-tested on hardware. This is why `build-fw.sh` does **not** cap the linker RAM: the build proves
+the *code* is correct and linkable; the *region reservation* is deferred to step 6, done against the
+real firmware layout, not a paper map.
 
 ## Relationship to the audio player
 
