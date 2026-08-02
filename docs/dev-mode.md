@@ -211,6 +211,14 @@ Two rules the wiring must hold to:
 Everything else is a one-line adapter from the table slot to the function the firmware already has.
 That is the whole point of baking libc in: the code exists once, resident, and the table is the seam.
 
+**Whole chain proven on Thumb** (`firmware/dev/qemu/run-qemu-full.sh`): the capstone QEMU test builds
+the table with the *real* `hx421_sys_build()` (not a mock), the loader places a separately-linked game
+at the frozen region base, and the loaded game runs through that table — printing its input
+(`pad0=0000C0DE`), round-tripping a file whose path the sandbox prefixed (`/sd2snes/hx421/mygame/
+save.dat`), and allocating from the game-region arena (verified by the arena's high-water mark). So
+`sys_build -> loader -> game -> arena + sandbox` composes correctly on real target execution — the
+exact firmware path minus the peripheral backends, which are the thin adapters above.
+
 ## USB: composite CDC + MSC (phase 2)
 
 One composite device gives both the drag-drop drive and the live terminal.

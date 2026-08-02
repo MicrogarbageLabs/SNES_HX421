@@ -15,6 +15,7 @@ void hx421_arena_init(Hx421SysImpl *s, void *arena, uint32_t size) {
     s->arena_size = size;
     s->arena_top = 0;
     s->arena_last = 0xFFFFFFFFu;   /* no block yet */
+    s->arena_peak = 0;
 }
 
 void *hx421_arena_alloc(Hx421SysImpl *s, uint32_t n) {
@@ -24,6 +25,7 @@ void *hx421_arena_alloc(Hx421SysImpl *s, uint32_t n) {
     s->arena_last = s->arena_top;
     void *p = &s->arena[s->arena_top];
     s->arena_top += n;
+    if (s->arena_top > s->arena_peak) s->arena_peak = s->arena_top;
     return p;
 }
 

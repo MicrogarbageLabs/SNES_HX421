@@ -14,6 +14,19 @@ void game_main(const Hx421Sys *sys) {
                (unsigned)sys_input(0),
                (unsigned)(sys->abi_version >> 16),
                (unsigned)(sys->abi_version & 0xFFFF));
+
+    /* exercise the heap (arena) and a file (sandboxed) through the table */
+    char *buf = (char *)sys_malloc(16);
+    for (int i = 0; i < 8; ++i) buf[i] = (char)('A' + i);
+    hx421_handle f = sys_open("save.dat", HX421_O_WRITE | HX421_O_CREATE);
+    sys_write(f, buf, 8);
+    sys_seek(f, 0);
+    char back[9] = {0};
+    sys_read(f, back, 8);
+    sys_close(f);
+    sys_printf("file=%s\n", back);
+    sys_free(buf);
+
     sys_yield();
     sys_print("LOADED GAME OK\n");
 }

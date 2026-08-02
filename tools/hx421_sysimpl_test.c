@@ -39,6 +39,12 @@ static void test_arena(void) {
     hx421_arena_free(&s, x);           /* not the top -> no-op */
     void *w = hx421_arena_alloc(&s, 16);
     ck(w != x, "freeing a non-top block does not reclaim it (documented LIFO)");
+
+    /* peak high-water survives frees, for budgeting */
+    hx421_arena_init(&s, mem, sizeof mem);
+    void *q = hx421_arena_alloc(&s, 40);
+    hx421_arena_free(&s, q);           /* top back to 0 ... */
+    ck(s.arena_top == 0 && s.arena_peak == 40, "peak records the high-water mark past a free");
 }
 
 /* ---- sandbox ---- */

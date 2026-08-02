@@ -52,6 +52,7 @@ typedef struct {
     uint32_t  arena_size;
     uint32_t  arena_top;      /* bytes used */
     uint32_t  arena_last;     /* offset of the most recent block (for LIFO free) */
+    uint32_t  arena_peak;     /* high-water mark, never reset by free — for budgeting */
 
     /* file sandbox: every game path is forced under this prefix, and any escape
      * (absolute, or a ".." component) is rejected. So a game sees only its own

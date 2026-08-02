@@ -38,6 +38,7 @@ int qemu_main(void) {
     /* the loaded code must have run to completion, through the table */
     if (!qstr(g_cap, "running from the game region")) { qh_write0("QEMU FAIL: game entry did not run\n"); ok = 0; }
     if (!qstr(g_cap, "pad0=00001234"))      { qh_write0("QEMU FAIL: table call from loaded code\n"); ok = 0; }
+    if (!qstr(g_cap, "file=ABCDEFGH"))      { qh_write0("QEMU FAIL: file round-trip from loaded code\n"); ok = 0; }
     if (g_yields != 1)                      { qh_write0("QEMU FAIL: yield from loaded code\n"); ok = 0; }
     if (!qstr(g_cap, "LOADED GAME OK"))     { qh_write0("QEMU FAIL: game did not reach the end\n"); ok = 0; }
 
