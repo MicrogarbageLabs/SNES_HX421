@@ -400,6 +400,32 @@ things that would grow into it are the firmware heap and stack — so the carve 
 its ~512 B transient heap and few-KB stack. During a game's run the firmware isn't allocating (it
 jumped to the game, which uses its own arena), so nothing contends for the region.
 
+## Running a game on hardware
+
+The `run` command lives on the **interactive CLI**, which on the mk3 STM32 build is the physical
+debug UART — **USART2, PA2 (TX) / PA3 (RX), 8N1, 921600 baud** (`stm32f4xx/uart.c`,
+`config-mk3-stm32`). It is *not* the USB port: USB runs the binary usb2snes protocol (file transfer),
+while the text CLI (`ls`, `put`, `run`) is UART-only. So you need a 3.3 V TTL USB-serial adapter on
+PA2/PA3/GND. From the SNES/menu side the dev firmware looks exactly like a stock FXPak — boots to the
+menu, runs ROMs — because the dev-mode addition is entirely on the serial console. (Verified on
+hardware: the carved firmware boots to menu and runs an SNES ROM normally, so capping RAM to 32K did
+not disturb stock operation.)
+
+Build a game and run it:
+
+1. `sh firmware/dev/build-game.sh` → `firmware/dev/game/build/hello.hxg`. It links the game at the
+   frozen region base, **asserts `game_main` lands at `HX421_GAME_BASE`** (a memmap/link drift
+   check), and packs it with the real `.bss` size (`_ebss - _sbss`) so the loader zeros bss.
+2. Copy `hello.hxg` to the SD card.
+3. On the serial console: `run hello.hxg`. It loads into the region, jumps, and prints a banner,
+   the arena-malloc result, `pad0` (0 until the input mailbox lands), and a guarded file test — all
+   through the syscall table, so seeing it proves the whole chain end-to-end.
+
+`hello.c` is a template: it uses only `sys_*` (no libc), and `game_main` is forced first via
+`__attribute__((section(".text.game_main")))`. Point `build-game.sh` at another `.c` to build your
+own. Caveat (until `fw_yield` is real): a game that never returns will block the CLI — start with
+games that return.
+
 ## Relationship to the audio player
 
 Dev mode and the audio player share the plumbing: USB loads files, the mixer plays them, the FFT feeds
