@@ -400,26 +400,35 @@ things that would grow into it are the firmware heap and stack — so the carve 
 its ~512 B transient heap and few-KB stack. During a game's run the firmware isn't allocating (it
 jumped to the game, which uses its own arena), so nothing contends for the region.
 
-## Running a game on hardware
+## The console: USB CDC terminal (dev build)
 
-The `run` command lives on the **interactive CLI**, which on the mk3 STM32 build is the physical
-debug UART — **USART2, PA2 (TX) / PA3 (RX), 8N1, 921600 baud** (`stm32f4xx/uart.c`,
-`config-mk3-stm32`). It is *not* the USB port: USB runs the binary usb2snes protocol (file transfer),
-while the text CLI (`ls`, `put`, `run`) is UART-only. So you need a 3.3 V TTL USB-serial adapter on
-PA2/PA3/GND. From the SNES/menu side the dev firmware looks exactly like a stock FXPak — boots to the
-menu, runs ROMs — because the dev-mode addition is entirely on the serial console. (Verified on
-hardware: the carved firmware boots to menu and runs an SNES ROM normally, so capping RAM to 32K did
-not disturb stock operation.)
+The interactive CLI (`ls` / `run` / game output) is reachable **over the FXPak's USB port** — no
+disassembly, no serial adapter. The board already enumerates as CDC-ACM; stock firmware hands that
+port to the binary usb2snes protocol, so the dev build (`-DHX421_DEV_TERMINAL`) **rewires the CDC
+data path to the text CLI instead**. The USB *descriptor is unchanged* — same COM port that already
+appears — only where the bytes go changes (`hx421_termcdc.c`; `cdcuser.c` routes EP2 to the console
+rings; `uart.c` tees `uart_putc`/`uart_getc`/`uart_gotc` through them, so every `printf`/CLI/game
+byte flows over USB with no edits to `cli.c`). The physical UART (USART2, PA2/PA3, 921600) is still
+driven in parallel if you ever want it.
+
+Trade-off: this dev build serves the terminal on that port **instead of** usb2snes — file transfer
+moves to MSC mode (next milestone) or an SD-card swap. Endpoint budget forced the choice: the F401
+OTG-FS has only 4 endpoints, so usb2snes + a second terminal can't coexist without a composite
+descriptor (a riskier, later option). From the SNES/menu side the firmware is still a normal FXPak —
+boots to menu, runs ROMs (hardware-verified; the RAM carve didn't disturb stock operation).
+
+Connect: open the FXPak's COM port in PuTTY (any baud — it's USB, the rate is ignored), **press ESC**
+to drop into the CLI (`cli_entrycheck` enters on ESC).
 
 Build a game and run it:
 
 1. `sh firmware/dev/build-game.sh` → `firmware/dev/game/build/hello.hxg`. It links the game at the
    frozen region base, **asserts `game_main` lands at `HX421_GAME_BASE`** (a memmap/link drift
    check), and packs it with the real `.bss` size (`_ebss - _sbss`) so the loader zeros bss.
-2. Copy `hello.hxg` to the SD card.
-3. On the serial console: `run hello.hxg`. It loads into the region, jumps, and prints a banner,
-   the arena-malloc result, `pad0` (0 until the input mailbox lands), and a guarded file test — all
-   through the syscall table, so seeing it proves the whole chain end-to-end.
+2. Copy `hello.hxg` to the SD card (swap the card, or via MSC mode once it lands).
+3. In the terminal: `run hello.hxg`. It loads into the region, jumps, and prints a banner, the
+   arena-malloc result, `pad0` (0 until the input mailbox lands), and a guarded file test — all
+   through the syscall table, so seeing it over USB proves the whole chain end-to-end.
 
 `hello.c` is a template: it uses only `sys_*` (no libc), and `game_main` is forced first via
 `__attribute__((section(".text.game_main")))`. Point `build-game.sh` at another `.c` to build your

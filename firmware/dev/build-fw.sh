@@ -27,9 +27,10 @@ src="$repo/third_party/sd2snes/src"
 [ -d "$src" ] || { echo "!! sd2snes submodule not checked out: $src"; exit 1; }
 
 echo "=== copy dev-mode sources + headers into the firmware tree ==="
-cp "$here/hx421_loader.c" "$here/hx421_sysimpl.c" "$here/hx421_fw.c" "$src/"
+cp "$here/hx421_loader.c" "$here/hx421_sysimpl.c" "$here/hx421_fw.c" \
+   "$here/hx421_termcdc.c" "$src/"
 cp "$here/hx421_syscall.h" "$here/hx421_loader.h" "$here/hx421_sysimpl.h" \
-   "$here/hx421_memmap.h" "$here/hx421_fw.h" "$src/"
+   "$here/hx421_memmap.h" "$here/hx421_fw.h" "$here/hx421_termcdc.h" "$src/"
 
 echo "=== apply the firmware-tree patch (SRC list + cli 'run' trigger + linker carve) ==="
 # One patch does three things in the fork: registers our .c on the Makefile SRC

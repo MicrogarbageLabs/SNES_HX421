@@ -1,15 +1,68 @@
 diff --git a/src/Makefile b/src/Makefile
-index 034cd96..808dc61 100644
+index 034cd96..97e951f 100644
 --- a/src/Makefile
 +++ b/src/Makefile
 @@ -83,6 +83,7 @@ SRC += cli.c ymodem.c rle.c msu1.c crc16.c sysinfo.c
  SRC += cfg.c cheat.c yaml.c savestate.c sgb.c hwinfo.c
  
  SRC += usbdesc.c usbcore.c usbuser.c cdcuser.c usbinterface.c
-+SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c
++SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c hx421_termcdc.c
  
  # List Assembler source files here.
  #     Make them always end in a capital .S.  Files ending in a lowercase .s
+@@ -124,6 +125,10 @@ CSTANDARD = -std=gnu99
+ 
+ # Place -D or -U options here
+ CDEFS = -DF_OSC=$(CONFIG_MCU_FOSC)UL
++# HX-421 dev-mode: route the single USB CDC port to the interactive text CLI
++# (ls/run/game output) instead of the binary usb2snes protocol. Descriptor
++# unchanged; only the CDC data path is rewired. See docs/dev-mode.md.
++CDEFS += -DHX421_DEV_TERMINAL
+ 
+ # Place -I options here
+ CINCS = -Iinclude
+diff --git a/src/cdcuser.c b/src/cdcuser.c
+index 2b42bd8..ade78a2 100644
+--- a/src/cdcuser.c
++++ b/src/cdcuser.c
+@@ -32,6 +32,9 @@
+ 
+ #include "usbinterface.h"
+ #include CONFIG_MCU_H //interrupt disable
++#ifdef HX421_DEV_TERMINAL
++#include "hx421_termcdc.h"      /* dev-mode: CDC carries the text CLI, not usb2snes */
++#endif
+ 
+ unsigned char BulkBufIn  [USB_CDC_BUFINSIZE];            // Buffer to store USB IN  packet
+ unsigned char BulkBufOut [USB_CDC_BUFOUTSIZE];            // Buffer to store USB OUT packet
+@@ -341,6 +344,13 @@ int CDC_BulkIn_occupied(void) {
+ extern volatile enum usbint_server_state_e server_state;
+ void CDC_BulkIn(void) {
+   int numBytesSend;
++
++#ifdef HX421_DEV_TERMINAL
++  /* dev-mode: EP2-IN completed — let the console send its next chunk */
++  term_on_in_complete();
++  return;
++#endif
++
+   //    printf("called CDC_BulkIn\n");                                                     // split into packets
+ 
+   // *interrupt
+@@ -415,6 +425,13 @@ void CDC_BulkIn(void) {
+ void CDC_BulkOut(void) {
+   int numBytesRead;
+ 
++#ifdef HX421_DEV_TERMINAL
++  /* dev-mode: hand received bytes to the text console instead of usb2snes */
++  numBytesRead = USB_ReadEP(CDC_DEP_OUT, &BulkBufOut[0]);
++  term_rx_push(BulkBufOut, (uint32_t)numBytesRead);
++  return;
++#endif
++
+   // get data from USB into intermediate buffer
+   if ( /*!cdc_bulkIN_occupied &&*/ !usbint_server_busy()) {
+     numBytesRead = USB_ReadEP(CDC_DEP_OUT, &BulkBufOut[0]);
 diff --git a/src/cli.c b/src/cli.c
 index 558c80a..656cff7 100644
 --- a/src/cli.c
@@ -82,3 +135,53 @@ index 30ef99b..412314f 100644
  }
  
  SECTIONS
+diff --git a/src/stm32f4xx/uart.c b/src/stm32f4xx/uart.c
+index 7e042d3..fdbfeda 100644
+--- a/src/stm32f4xx/uart.c
++++ b/src/stm32f4xx/uart.c
+@@ -8,6 +8,9 @@
+ #include "bits.h"
+ #include "uart.h"
+ #include "led.h"
++#ifdef HX421_DEV_TERMINAL
++#include "hx421_termcdc.h"   /* dev-mode: the console lives on the USB CDC port */
++#endif
+ 
+ static volatile unsigned int read_idx,write_idx;
+ 
+@@ -16,18 +19,35 @@ void uart_putc(char c) {
+     uart_putc('\r');
+   while(!(BITBAND(UART_REGS->SR, USART_SR_TXE_Pos)));
+   UART_REGS->DR = c;
++#ifdef HX421_DEV_TERMINAL
++  term_putc(c);              /* tee to the USB terminal (physical UART still driven) */
++#endif
+ }
+ 
+ /* Polling version only */
+ unsigned char uart_getc(void) {
++#ifdef HX421_DEV_TERMINAL
++  /* take whichever source has a byte first: USB terminal or physical UART */
++  for (;;) {
++    if (term_avail())
++      return (unsigned char)term_getc();
++    if (BITBAND(UART_REGS->SR, USART_SR_RXNE_Pos))
++      return UART_REGS->DR;
++  }
++#else
+   /* wait for character */
+   while (!(BITBAND(UART_REGS->SR, USART_SR_RXNE_Pos))) ;
+   return UART_REGS->DR;
++#endif
+ }
+ 
+ /* Returns true if a char is ready */
+ unsigned char uart_gotc(void) {
++#ifdef HX421_DEV_TERMINAL
++  return (BITBAND(UART_REGS->SR, USART_SR_RXNE_Pos) || term_avail());
++#else
+   return BITBAND(UART_REGS->SR, USART_SR_RXNE_Pos);
++#endif
+ }
+ 
+ void uart_init(void) {
