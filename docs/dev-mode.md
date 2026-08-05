@@ -417,8 +417,14 @@ OTG-FS has only 4 endpoints, so usb2snes + a second terminal can't coexist witho
 descriptor (a riskier, later option). From the SNES/menu side the firmware is still a normal FXPak —
 boots to menu, runs ROMs (hardware-verified; the RAM carve didn't disturb stock operation).
 
-Connect: open the FXPak's COM port in PuTTY (any baud — it's USB, the rate is ignored), **press ESC**
-to drop into the CLI (`cli_entrycheck` enters on ESC).
+Connect: open the FXPak's COM port in PuTTY (any baud — it's USB, the rate is ignored) and **press
+any key** — the dev build's `cli_entrycheck` enters the CLI on any keystroke and prints a banner, so
+the keypress produces visible output (which also confirms the terminal TX path).
+
+**Reflashing:** the dev build stamps a unique timestamp as its firmware version (`build-fw.sh` passes
+`VERSION='*'`), so the SD updater always reflashes and the on-screen version confirms which build is
+running. A *static* version (the repo's `1.11.2`) can look identical to a prior custom build and be
+skipped — the classic "I flashed but nothing changed" trap.
 
 Build a game and run it:
 

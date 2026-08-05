@@ -64,7 +64,7 @@ index 2b42bd8..ade78a2 100644
    if ( /*!cdc_bulkIN_occupied &&*/ !usbint_server_busy()) {
      numBytesRead = USB_ReadEP(CDC_DEP_OUT, &BulkBufOut[0]);
 diff --git a/src/cli.c b/src/cli.c
-index 558c80a..656cff7 100644
+index 558c80a..008fc15 100644
 --- a/src/cli.c
 +++ b/src/cli.c
 @@ -46,6 +46,7 @@
@@ -111,7 +111,29 @@ index 558c80a..656cff7 100644
  void cmd_rm(void) {
    FRESULT res = f_unlink(curchar);
    if(res) print_fresult(res, "Error %d removing %s", res, curchar);
-@@ -704,6 +723,10 @@ void cli_loop(void) {
+@@ -558,10 +577,21 @@ void cli_init(void) {
+ }
+ 
+ void cli_entrycheck() {
++#ifdef HX421_DEV_TERMINAL
++  /* dev terminal over USB CDC: enter the CLI on ANY key (not just ESC), and
++   * print a banner so the keypress produces visible output — proving the USB
++   * terminal TX path end to end. */
++  if(uart_gotc()) {
++    uart_getc();                 /* consume the keystroke */
++    printf("\r\n*** HX-421 dev terminal CLI ready (type ? for help) ***\r\n");
++    cli_loop();
++  }
++#else
+   if(uart_gotc() && uart_getc() == 27) {
+     printf("*** BREAK\n");
+     cli_loop();
+   }
++#endif
+ }
+ 
+ void cli_loop(void) {
+@@ -704,6 +734,10 @@ void cli_loop(void) {
        case CMD_MV:
          cmd_mv();
          break;

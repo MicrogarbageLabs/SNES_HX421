@@ -53,7 +53,11 @@ fi
 echo "=== build firmware.stm ==="
 cd "$src"
 [ -f utils/genhdr ] || gcc -O2 -o utils/genhdr utils/genhdr.c
-make CONFIG=config-mk3-stm32
+# VERSION='*' stamps a build timestamp as CONFIG_VERSION (version.mk) so every dev
+# build has a UNIQUE, higher version. That guarantees the SD firmware updater
+# actually reflashes (a static 1.11.2 looks identical to a prior custom build and
+# can be skipped) and lets the on-screen version confirm which build is running.
+make CONFIG=config-mk3-stm32 VERSION='*'
 
 echo
 echo "=== result ==="
