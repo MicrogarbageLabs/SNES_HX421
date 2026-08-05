@@ -64,7 +64,7 @@ index 2b42bd8..ade78a2 100644
    if ( /*!cdc_bulkIN_occupied &&*/ !usbint_server_busy()) {
      numBytesRead = USB_ReadEP(CDC_DEP_OUT, &BulkBufOut[0]);
 diff --git a/src/cli.c b/src/cli.c
-index 558c80a..008fc15 100644
+index 558c80a..48e8fb8 100644
 --- a/src/cli.c
 +++ b/src/cli.c
 @@ -46,6 +46,7 @@
@@ -111,7 +111,7 @@ index 558c80a..008fc15 100644
  void cmd_rm(void) {
    FRESULT res = f_unlink(curchar);
    if(res) print_fresult(res, "Error %d removing %s", res, curchar);
-@@ -558,10 +577,21 @@ void cli_init(void) {
+@@ -558,10 +577,28 @@ void cli_init(void) {
  }
  
  void cli_entrycheck() {
@@ -123,7 +123,14 @@ index 558c80a..008fc15 100644
 +    uart_getc();                 /* consume the keystroke */
 +    printf("\r\n*** HX-421 dev terminal CLI ready (type ? for help) ***\r\n");
 +    cli_loop();
++    return;
 +  }
++  /* proof-of-life heartbeat: printed periodically to the USB terminal so that
++   * simply opening PuTTY shows the dev firmware is alive and TX works, with no
++   * keypress or CLI entry needed. This poll runs ~50 Hz in menu_main_loop. */
++  static uint32_t hb = 0;
++  if((++hb % 100u) == 0u)
++    printf("[HX-421 dev terminal alive - press any key for CLI]\r\n");
 +#else
    if(uart_gotc() && uart_getc() == 27) {
      printf("*** BREAK\n");
@@ -133,7 +140,7 @@ index 558c80a..008fc15 100644
  }
  
  void cli_loop(void) {
-@@ -704,6 +734,10 @@ void cli_loop(void) {
+@@ -704,6 +741,10 @@ void cli_loop(void) {
        case CMD_MV:
          cmd_mv();
          break;
@@ -207,3 +214,36 @@ index 7e042d3..fdbfeda 100644
  }
  
  void uart_init(void) {
+diff --git a/src/usbdesc.c b/src/usbdesc.c
+index 6f203e4..070eab9 100644
+--- a/src/usbdesc.c
++++ b/src/usbdesc.c
+@@ -167,6 +167,20 @@ const uint8_t USB_StringDescriptor[] = {
+   '1',0,
+ /* Index 0x02: Product */
+ /* TODO: Identify as FXPAK Pro from Mk3 Rev.B onwards */
++#ifdef HX421_DEV_TERMINAL
++  /* dev build: a distinct product name so Device Manager confirms at a glance
++   * whether the dev firmware actually flashed (independent of the terminal). */
++  (8*2 + 2),                         /* bLength (8 Char + Type + length) */
++  USB_STRING_DESCRIPTOR_TYPE,        /* bDescriptorType */
++  'H',0,
++  'X',0,
++  '4',0,
++  '2',0,
++  '1',0,
++  'D',0,
++  'E',0,
++  'V',0,
++#else
+   (7*2 + 2),                         /* bLength (7 Char + Type + lenght) */
+   USB_STRING_DESCRIPTOR_TYPE,        /* bDescriptorType */
+   's',0,
+@@ -176,6 +190,7 @@ const uint8_t USB_StringDescriptor[] = {
+   'n',0,
+   'e',0,
+   's',0,
++#endif
+ /* Index 0x03: Serial Number */
+ /* TODO: deploy a real serial number here */
+   (12*2 + 2),                        /* bLength (12 Char + Type + lenght) */
