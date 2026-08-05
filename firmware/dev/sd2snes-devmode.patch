@@ -247,3 +247,27 @@ index 6f203e4..070eab9 100644
  /* Index 0x03: Serial Number */
  /* TODO: deploy a real serial number here */
    (12*2 + 2),                        /* bLength (12 Char + Type + lenght) */
+diff --git a/src/usbuser.c b/src/usbuser.c
+index 3354b4a..0573230 100644
+--- a/src/usbuser.c
++++ b/src/usbuser.c
+@@ -27,6 +27,9 @@
+ #include "usbcore.h"
+ #include "usbuser.h"
+ #include "cdcuser.h"
++#ifdef HX421_DEV_TERMINAL
++#include "hx421_termcdc.h"
++#endif
+ 
+ extern unsigned char soft_bulkin_int;
+ 
+@@ -122,6 +125,9 @@ void USB_Configure_Event (void) {
+     /* add your code here */
+     //saturnu new - org: not there:>
+ 	CDC_block_conf ();
++#ifdef HX421_DEV_TERMINAL
++	term_reset();          /* fresh connection: clear any wedged TX state */
++#endif
+   }
+ }
+ #endif

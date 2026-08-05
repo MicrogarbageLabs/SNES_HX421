@@ -22,6 +22,12 @@
 #include CONFIG_MCU_H   /* __get_PRIMASK / __disable_irq / __set_PRIMASK */
 #include "hx421_termcdc.h"
 
+/* Set nonzero by the core once the host has issued SetConfiguration. We must NOT
+ * touch the IN endpoint before that: an early-boot print (the firmware banners
+ * before the host is reading) would otherwise start a transfer that never
+ * completes, wedging tx_busy at 1 and killing all later output. */
+extern volatile uint8_t USB_Configuration;
+
 #define TERM_RX_SZ 256u    /* host -> device: keystrokes (power of two) */
 #define TERM_TX_SZ 2048u   /* device -> host: console + game output    */
 
@@ -55,6 +61,7 @@ int term_getc(void) {
  *      transfer. Caller must hold off the USB ISR (or already be in it). ---- */
 static void tx_start_locked(void) {
     if (tx_busy) return;
+    if (!USB_Configuration) return;      /* host not ready — don't wedge the EP */
     uint32_t n = 0;
     while (n < USB_CDC_BUFINSIZE && tx_rd != tx_wr) {
         tx_stage[n++] = tx_buf[tx_rd];
@@ -82,4 +89,16 @@ void term_putc(char c) {
 void term_on_in_complete(void) {
     tx_busy = 0;
     tx_start_locked();                            /* already in ISR context */
+}
+
+/* Reset all terminal state. Called from USB_Configure_Event when the host
+ * (re)configures the device, so a fresh connection starts with tx_busy clear and
+ * empty rings — undoing any half-started transfer from before the host was up. */
+void term_reset(void) {
+    uint32_t pri = __get_PRIMASK();
+    __disable_irq();
+    tx_busy = 0;
+    tx_wr = tx_rd = 0;
+    rx_wr = rx_rd = 0;
+    __set_PRIMASK(pri);
 }
