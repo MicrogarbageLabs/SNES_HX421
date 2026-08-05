@@ -59,6 +59,12 @@ cd "$src"
 # can be skipped) and lets the on-screen version confirm which build is running.
 make CONFIG=config-mk3-stm32 VERSION='*'
 
+# The mk3-stm32 build names its output firmware.stm, but the FXPak Pro bootloader
+# looks for firmware.img on the SD card. The .stm IS the correct STM32 firmware
+# (right CPU + valid STM3 header) — only the filename differs — so emit an
+# identical firmware.img copy that the bootloader will actually pick up.
+cp obj-mk3-stm32/firmware.stm obj-mk3-stm32/firmware.img
+
 echo
-echo "=== result ==="
-ls -la obj-mk3-stm32/firmware.stm obj-mk3-stm32/hx421_*.o
+echo "=== result — copy firmware.img to the SD card /sd2snes/ and COLD-BOOT ==="
+ls -la obj-mk3-stm32/firmware.img obj-mk3-stm32/firmware.stm
