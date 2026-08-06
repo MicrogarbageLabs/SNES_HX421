@@ -8,7 +8,7 @@
   we can see which stage of the DAC seam is dead on real hardware. Needs the tone
   core (HX421_AUDIO_TONE) flashed; run it like h2_probe.sfc.
 
-  Same OBC1 header ($30/$25) as h2_probe so the FXPak selects /sd2snes/fpga_obc1.bi3.
+  Same OBC1 header ($30/$25) as h2_probe so the FXPak selects /sd2snes/fpga_hx421.bi3.
 
   Public domain (CC0). No warranty.
 #>
@@ -43,8 +43,8 @@ $bytes[$hdr + 0x1F] = [byte](($sum -shr 8) -band 0xFF)
 Step ("checksum {0:X4}" -f $sum)
 
 $type = $bytes[$hdr + 0x16]
-if ($type -ne 0x25) { throw ("carttype is {0:X2}, expected 25 (OBC1)" -f $type) }
-Step "carttype 25 -> selects /sd2snes/fpga_obc1.bi3 (the tone core)"
+if ($type -ne 0xE4) { throw ("carttype is {0:X2}, expected E4 (HX-421)" -f $type) }
+Step "carttype E4 -> selects /sd2snes/fpga_hx421.bi3 (the tone core)"
 
 Write-Host ""
 Write-Host "Copy snes\build\h4_diag.sfc to the SD card and run it (tone core flashed)." -ForegroundColor Green

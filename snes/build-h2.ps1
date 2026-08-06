@@ -5,7 +5,7 @@
 
   Produces, in snes\build\:
     h2_probe.sfc     LoROM, OBC1 header, reads $F000-$F003 and reports
-    fpga_obc1.bi3    the h2_sig bitstream, RLE-packed
+    fpga_hx421.bi3    the h2_sig bitstream, RLE-packed
 
   The SAME ROM reads $FF filler on the stock core and 'H','X','4','2' on
   ours, so the two cases cannot be confused. See docs\bringup.md.
@@ -57,8 +57,8 @@ if (($fill | Where-Object { $_ -ne 0xFF }).Count -ne 0) {
 Step "file offset 1F000 is FF FF FF FF - the stock-core case reads filler"
 
 $type = $bytes[$hdr + 0x16]
-if ($type -ne 0x25) { throw ("carttype is {0:X2}, expected 25 (OBC1)" -f $type) }
-Step "carttype 25 -> selects /sd2snes/fpga_obc1.bi3"
+if ($type -ne 0xE4) { throw ("carttype is {0:X2}, expected E4 (HX-421)" -f $type) }
+Step "carttype E4 -> selects /sd2snes/fpga_hx421.bi3"
 
 # ---- an emulator-testable twin -------------------------------------------
 # bsnes-plus reads the SAME header and instantiates its OBC1 chip, then
@@ -89,11 +89,11 @@ $packer = Join-Path $out "rlepack.exe"
 $gcc = Get-Command gcc -ErrorAction SilentlyContinue
 if (-not $gcc) { $gcc = "C:\msys64\mingw64\bin\gcc.exe" }
 & $gcc -O2 -std=c99 -o $packer (Join-Path $repo "tools\hx421_rlepack.c")
-& $packer $rbf (Join-Path $out "fpga_obc1.bi3")
+& $packer $rbf (Join-Path $out "fpga_hx421.bi3")
 
 Write-Host ""
 Write-Host "On the SD card:" -ForegroundColor Green
-Write-Host "  1. copy snes\build\fpga_obc1.bi3 -> /sd2snes/  (back up the old one)"
+Write-Host "  1. copy snes\build\fpga_hx421.bi3 -> /sd2snes/  (back up the old one)"
 Write-Host "  2. copy snes\build\h2_probe.sfc  -> anywhere browsable"
 Write-Host "  3. run it"
 Write-Host ""

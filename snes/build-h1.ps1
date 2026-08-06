@@ -5,11 +5,11 @@
 
   Produces, in snes\build\:
     h1_probe.sfc     128 KB LoROM, header declares OBC1 (map $30 / type $25)
-    fpga_obc1.bi3    the baseline bitstream, RLE-packed for the FXPak MCU
+    fpga_hx421.bi3    the baseline bitstream, RLE-packed for the FXPak MCU
 
   Copy BOTH to the SD card:
     h1_probe.sfc     anywhere you can browse to
-    fpga_obc1.bi3    /sd2snes/  -- BACK UP THE EXISTING FILE FIRST
+    fpga_hx421.bi3    /sd2snes/  -- BACK UP THE EXISTING FILE FIRST
 
   See docs\bringup.md. Needs ca65 + ld65 on PATH, and gcc for the packer.
 
@@ -58,10 +58,10 @@ Step ("checksum {0:X4}, complement {1:X4}" -f $sum, $comp)
 # loads fpga_base and the whole experiment silently tests nothing.
 $map  = $bytes[$hdr + 0x15]
 $type = $bytes[$hdr + 0x16]
-if ($map -eq 0x30 -and $type -eq 0x25) {
-    Step ("header map={0:X2} carttype={1:X2} -> selects /sd2snes/fpga_obc1.bi3" -f $map, $type)
+if ($map -eq 0x30 -and $type -eq 0xE4) {
+    Step ("header map={0:X2} carttype={1:X2} -> selects /sd2snes/fpga_hx421.bi3" -f $map, $type)
 } else {
-    throw ("header map={0:X2} carttype={1:X2} does NOT select the OBC1 core" -f $map, $type)
+    throw ("header map={0:X2} carttype={1:X2} does NOT select the HX-421 core" -f $map, $type)
 }
 
 # ---- 3. pack the bitstream ----------------------------------------------
@@ -79,7 +79,7 @@ if (-not (Test-Path $gcc) -and -not (Get-Command gcc -ErrorAction SilentlyContin
     exit 0
 }
 & $gcc -O2 -std=c99 -o $packer (Join-Path $repo "tools\hx421_rlepack.c")
-& $packer $rbf (Join-Path $out "fpga_obc1.bi3")
+& $packer $rbf (Join-Path $out "fpga_hx421.bi3")
 
 # ---- 4. the negative control --------------------------------------------
 # "The ROM runs" does NOT prove OUR bitstream is loaded: if the file were
@@ -94,17 +94,17 @@ if (-not (Test-Path $gcc) -and -not (Get-Command gcc -ErrorAction SilentlyContin
 # screen stays black. So a black screen with this file is PROOF that the
 # file is being read and programmed, and therefore that the working result
 # came from our bitstream rather than a stale fpga_base.
-$good = Join-Path $out "fpga_obc1.bi3"
-$bad  = Join-Path $out "fpga_obc1_TRUNCATED.bi3"
+$good = Join-Path $out "fpga_hx421.bi3"
+$bad  = Join-Path $out "fpga_hx421_TRUNCATED.bi3"
 $gb = [System.IO.File]::ReadAllBytes($good)
 $half = [int]($gb.Length / 2)
 [System.IO.File]::WriteAllBytes($bad, $gb[0..($half - 1)])
-Step ("wrote fpga_obc1_TRUNCATED.bi3 ({0} B) - negative control, expect a HANG" -f $half)
+Step ("wrote fpga_hx421_TRUNCATED.bi3 ({0} B) - negative control, expect a HANG" -f $half)
 
 Write-Host ""
 Write-Host "Ready. On the SD card:" -ForegroundColor Green
-Write-Host "  1. BACK UP  /sd2snes/fpga_obc1.bi3  off the card"
-Write-Host "  2. copy     snes\build\fpga_obc1.bi3  ->  /sd2snes/"
+Write-Host "  1. BACK UP  /sd2snes/fpga_hx421.bi3  off the card"
+Write-Host "  2. copy     snes\build\fpga_hx421.bi3  ->  /sd2snes/"
 Write-Host "  3. copy     snes\build\h1_probe.sfc   ->  anywhere browsable"
 Write-Host "  4. load h1_probe.sfc and WATCH THE SCREEN"
 Write-Host ""

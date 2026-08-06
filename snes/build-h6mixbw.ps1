@@ -1,7 +1,7 @@
 <#
   build-h6mixbw.ps1 — assemble the execute-from-WRAM test on the 6b.1b core.
   Boots, unmutes, plays the PSRAM sine, then jml's into a WRAM spin loop so the
-  cart bus is 100% free for the mixer. Same OBC1 header -> selects fpga_obc1.bi3.
+  cart bus is 100% free for the mixer. Same OBC1 header -> selects fpga_hx421.bi3.
   Public domain (CC0). No warranty.
 #>
 $ErrorActionPreference = "Stop"
@@ -33,9 +33,9 @@ $bytes[$hdr + 0x1C] = [byte]($comp -band 0xFF); $bytes[$hdr + 0x1D] = [byte](($c
 $bytes[$hdr + 0x1E] = [byte]($sum -band 0xFF);  $bytes[$hdr + 0x1F] = [byte](($sum -shr 8) -band 0xFF)
 [System.IO.File]::WriteAllBytes($sfc, $bytes)
 Step ("checksum {0:X4}" -f $sum)
-if ($bytes[$hdr + 0x16] -ne 0x25) { throw ("carttype {0:X2}, expected 25" -f $bytes[$hdr+0x16]) }
-Step "carttype 25 -> selects /sd2snes/fpga_obc1.bi3 (the 6b.1b core)"
+if ($bytes[$hdr + 0x16] -ne 0xE4) { throw ("carttype {0:X2}, expected E4" -f $bytes[$hdr+0x16]) }
+Step "carttype E4 -> selects /sd2snes/fpga_hx421.bi3 (the 6b.1b core)"
 Write-Host ""
-Write-Host "Flash the 6b.1b fpga_obc1.bi3, then run h6_mixbw.sfc." -ForegroundColor Green
+Write-Host "Flash the 6b.1b fpga_hx421.bi3, then run h6_mixbw.sfc." -ForegroundColor Green
 Write-Host "The SNES jumps into WRAM -> mixer gets full bandwidth."
 Write-Host "Expect a CLEANER, STEADIER ~344 Hz sine than h6_drain (which ran from ROM)."

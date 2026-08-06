@@ -15,7 +15,7 @@
      cd fpga\build\h2_base
      quartus_sh --flow compile main         (HX421_AUDIO_TONE is set in main.qsf)
 
-  Produces snes\build\fpga_obc1.bi3 (RLE-packed, ready for /sd2snes/).
+  Produces snes\build\fpga_hx421.bi3 (RLE-packed, ready for /sd2snes/).
 
   Reuses the existing h2_probe.sfc (unchanged — same signature read).
 
@@ -51,7 +51,7 @@ $packer = Join-Path $out "rlepack.exe"
 $gcc = Get-Command gcc -ErrorAction SilentlyContinue
 if (-not $gcc) { $gcc = "C:\msys64\mingw64\bin\gcc.exe" }
 & $gcc -O2 -std=c99 -o $packer (Join-Path $repo "tools\hx421_rlepack.c")
-$bi3 = Join-Path $out "fpga_obc1.bi3"
+$bi3 = Join-Path $out "fpga_hx421.bi3"
 & $packer $rbf $bi3
 Step ("packed -> {0} ({1:N0} bytes)" -f $bi3, (Get-Item $bi3).Length)
 
@@ -61,8 +61,8 @@ if (-not (Test-Path $probe)) { Warn "h2_probe.sfc missing - run .\snes\build-h2.
 
 Write-Host ""
 Write-Host "On the SD card:" -ForegroundColor Green
-Write-Host "  1. BACK UP /sd2snes/fpga_obc1.bi3 first (your H2 core / stock OBC1)"
-Write-Host "  2. copy snes\build\fpga_obc1.bi3 -> /sd2snes/"
+Write-Host "  1. BACK UP /sd2snes/fpga_hx421.bi3 first (your H2 core / stock OBC1)"
+Write-Host "  2. copy snes\build\fpga_hx421.bi3 -> /sd2snes/"
 Write-Host "  3. copy snes\build\h2_probe.sfc  -> anywhere browsable, run it"
 Write-Host ""
 Write-Host "  Expect BOTH:" -ForegroundColor Green

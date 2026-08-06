@@ -3,7 +3,7 @@
 
     .\snes\build-h4apu.ps1
 
-  Produces snes\build\h4_tone_apu.sfc. Run it on the tone core (fpga_obc1.bi3
+  Produces snes\build\h4_tone_apu.sfc. Run it on the tone core (fpga_hx421.bi3
   = the HX421_AUDIO_TONE build). It unmutes the SNES DSP so the tone the FPGA is
   already generating becomes audible. No FPGA rebuild needed.
 
@@ -41,9 +41,9 @@ $bytes[$hdr + 0x1F] = [byte](($sum -shr 8) -band 0xFF)
 Step ("checksum {0:X4}" -f $sum)
 
 $type = $bytes[$hdr + 0x16]
-if ($type -ne 0x25) { throw ("carttype is {0:X2}, expected 25 (OBC1)" -f $type) }
-Step "carttype 25 -> selects /sd2snes/fpga_obc1.bi3 (the tone core)"
+if ($type -ne 0xE4) { throw ("carttype is {0:X2}, expected E4 (HX-421)" -f $type) }
+Step "carttype E4 -> selects /sd2snes/fpga_hx421.bi3 (the tone core)"
 
 Write-Host ""
-Write-Host "Make sure /sd2snes/fpga_obc1.bi3 is the TONE core (147,775 B), then run" -ForegroundColor Green
+Write-Host "Make sure /sd2snes/fpga_hx421.bi3 is the TONE core (147,775 B), then run" -ForegroundColor Green
 Write-Host "snes\build\h4_tone_apu.sfc. You should now HEAR the ~441 Hz tone."

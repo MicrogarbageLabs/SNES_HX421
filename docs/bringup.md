@@ -4,6 +4,14 @@ First contact between our build and real silicon. The organising principle: **th
 must not be able to brick the device**, and it must produce a legible answer even if everything
 about our bitstream is wrong.
 
+> **UPDATE (2026-08-05): HX-421 now has its OWN registered core — no more OBC1 borrowing.**
+> Once firmware flashing was working, `FPGA_HX421` was added to the firmware (`fpga.h`/`smc.h`/`smc.c`,
+> in `firmware/dev/sd2snes-devmode.patch`): a ROM with **`map $30` + `carttype $E4`** now selects
+> **`/sd2snes/fpga_hx421.bi3`** — its own slot, leaving stock `fpga_obc1.bi3` intact. The shared
+> `snes/h1_header.s` and the `build-*.ps1` scripts were updated accordingly ($25→$E4, pack
+> `fpga_hx421.bi3`). The OBC1-borrow method below is kept as the historical record of how H1–H6 ran;
+> the mechanism is identical, only the registered `(map, carttype) → file` triple changed.
+
 ## The safe path: borrow a core slot, flash nothing
 
 The FXPak already loads a **per-game FPGA core from the SD card**. That is how it does GSU, SA-1,
