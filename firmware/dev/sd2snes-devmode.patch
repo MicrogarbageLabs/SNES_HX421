@@ -151,6 +151,49 @@ index 558c80a..48e8fb8 100644
      }
    }
  }
+diff --git a/src/fpga.h b/src/fpga.h
+index fb745e0..12f97ce 100644
+--- a/src/fpga.h
++++ b/src/fpga.h
+@@ -45,6 +45,9 @@ extern const uint8_t *fpga_config;
+ 
+ #define FPGA_CX4 ((const uint8_t*)"/sd2snes/fpga_cx4." FPGA_CONF_EXT)
+ #define FPGA_OBC1 ((const uint8_t*)"/sd2snes/fpga_obc1." FPGA_CONF_EXT)
++/* HX-421 coprocessor core — its own registered slot, so the bitstream lives at
++ * /sd2snes/fpga_hx421.bi3 instead of clobbering a stock core (was: OBC1). */
++#define FPGA_HX421 ((const uint8_t*)"/sd2snes/fpga_hx421." FPGA_CONF_EXT)
+ #define FPGA_GSU ((const uint8_t*)"/sd2snes/fpga_gsu." FPGA_CONF_EXT)
+ #define FPGA_SA1 ((const uint8_t*)"/sd2snes/fpga_sa1." FPGA_CONF_EXT)
+ #define FPGA_SDD1 ((const uint8_t*)"/sd2snes/fpga_sdd1." FPGA_CONF_EXT)
+diff --git a/src/smc.c b/src/smc.c
+index 11398fe..1825965 100644
+--- a/src/smc.c
++++ b/src/smc.c
+@@ -199,6 +199,12 @@ void smc_id(snes_romprops_t* props, uint32_t file_offset) {
+         props->has_obc1 = 1;
+         props->fpga_conf = FPGA_OBC1;
+       }
++      /* HX-421 coprocessor (map 0x30, carttype 0xE4) — its own registered core,
++       * so ROMs no longer masquerade as OBC1 and fpga_obc1.bi3 stays stock. */
++      else if (header->map == 0x30 && header->carttype == 0xe4) {
++        props->has_hx421 = 1;
++        props->fpga_conf = FPGA_HX421;
++      }
+       /* SuperFX LoROM */
+       else if (header->map == 0x20 && ((header->carttype >= 0x13 && header->carttype <= 0x15) ||
+           header->carttype == 0x1a)) {
+diff --git a/src/smc.h b/src/smc.h
+index 6b64edc..42fde17 100644
+--- a/src/smc.h
++++ b/src/smc.h
+@@ -83,6 +83,7 @@ typedef struct __attribute__ ((__packed__)) _snes_romprops {
+   uint8_t has_msu1;           /* MSU1 presence flag */
+   uint8_t has_cx4;            /* CX4 presence flag */
+   uint8_t has_obc1;           /* OBC1 presence flag */
++  uint8_t has_hx421;          /* HX-421 coprocessor presence flag */
+   uint8_t has_gsu;            /* GSU presence flag */
+   uint8_t has_sa1;            /* SA-1 presence flag */
+   uint8_t has_sdd1;           /* S-DD1 presence flag */
 diff --git a/src/stm32f401.ld b/src/stm32f401.ld
 index 30ef99b..412314f 100644
 --- a/src/stm32f401.ld
