@@ -1,12 +1,12 @@
 diff --git a/src/Makefile b/src/Makefile
-index 034cd96..97e951f 100644
+index 034cd96..c0ae854 100644
 --- a/src/Makefile
 +++ b/src/Makefile
 @@ -83,6 +83,7 @@ SRC += cli.c ymodem.c rle.c msu1.c crc16.c sysinfo.c
  SRC += cfg.c cheat.c yaml.c savestate.c sgb.c hwinfo.c
  
  SRC += usbdesc.c usbcore.c usbuser.c cdcuser.c usbinterface.c
-+SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c hx421_termcdc.c
++SRC += hx421_loader.c hx421_sysimpl.c hx421_fw.c hx421_termcdc.c hx421_msc.c
  
  # List Assembler source files here.
  #     Make them always end in a capital .S.  Files ending in a lowercase .s
@@ -64,18 +64,21 @@ index 2b42bd8..ade78a2 100644
    if ( /*!cdc_bulkIN_occupied &&*/ !usbint_server_busy()) {
      numBytesRead = USB_ReadEP(CDC_DEP_OUT, &BulkBufOut[0]);
 diff --git a/src/cli.c b/src/cli.c
-index 558c80a..48e8fb8 100644
+index 558c80a..aec88a0 100644
 --- a/src/cli.c
 +++ b/src/cli.c
-@@ -46,6 +46,7 @@
+@@ -46,6 +46,10 @@
  #include "cic.h"
  #include "ymodem.h"
  #include "rtc.h"
 +#include "hx421_fw.h"      /* HX-421 dev-mode: load-and-run a RAM game */
++#ifdef HX421_DEV_TERMINAL
++#include "hx421_msc.h"     /* msc_host_wrote: remount after a USB-drive write */
++#endif
  
  #include "cli.h"
  
-@@ -57,8 +58,8 @@ static char *curchar;
+@@ -57,8 +61,8 @@ static char *curchar;
  
  /* Word lists */
  static char command_words[] =
@@ -86,7 +89,7 @@ index 558c80a..48e8fb8 100644
  
  /* ------------------------------------------------------------------------- */
  /*   Parse functions                                                         */
-@@ -368,6 +369,24 @@ void cmd_put(void) {
+@@ -368,6 +372,33 @@ void cmd_put(void) {
    }
  }
  
@@ -99,6 +102,15 @@ index 558c80a..48e8fb8 100644
 +    printf("Usage: run <file.hxg>\n");
 +    return;
 +  }
++#ifdef HX421_DEV_TERMINAL
++  /* If the host dropped files over the USB drive, our FatFs view is stale --
++   * remount so `run` sees them. (Eject on the PC first so its writes flushed.) */
++  if(msc_host_wrote) {
++    file_init();
++    msc_host_wrote = 0;
++    printf("(remounted SD after USB drive write)\n");
++  }
++#endif
 +  printf("loading %s ...\n", curchar);
 +  int r = hx421_fw_run_game(curchar, "/sd2snes/hx421");
 +  if(r == 0) {
@@ -111,7 +123,7 @@ index 558c80a..48e8fb8 100644
  void cmd_rm(void) {
    FRESULT res = f_unlink(curchar);
    if(res) print_fresult(res, "Error %d removing %s", res, curchar);
-@@ -558,10 +577,28 @@ void cli_init(void) {
+@@ -558,10 +589,28 @@ void cli_init(void) {
  }
  
  void cli_entrycheck() {
@@ -140,7 +152,7 @@ index 558c80a..48e8fb8 100644
  }
  
  void cli_loop(void) {
-@@ -704,6 +741,10 @@ void cli_loop(void) {
+@@ -704,6 +753,10 @@ void cli_loop(void) {
        case CMD_MV:
          cmd_mv();
          break;
@@ -257,11 +269,127 @@ index 7e042d3..fdbfeda 100644
  }
  
  void uart_init(void) {
+diff --git a/src/usbcfg.h b/src/usbcfg.h
+index 2c4def8..26df691 100644
+--- a/src/usbcfg.h
++++ b/src/usbcfg.h
+@@ -127,7 +127,11 @@
+ #define USB_WAKEUP_EVENT    0
+ #define USB_SOF_EVENT       0
+ #define USB_ERROR_EVENT     0
++#ifdef HX421_DEV_TERMINAL
++#define USB_EP_EVENT        0x000F  /* +EP3 for the mass-storage bulk handler */
++#else
+ #define USB_EP_EVENT        0x0007
++#endif
+ #define USB_CONFIGURE_EVENT 1
+ #define USB_INTERFACE_EVENT 0
+ #define USB_FEATURE_EVENT   0
 diff --git a/src/usbdesc.c b/src/usbdesc.c
-index 6f203e4..070eab9 100644
+index 6f203e4..ebf67a7 100644
 --- a/src/usbdesc.c
 +++ b/src/usbdesc.c
-@@ -167,6 +167,20 @@ const uint8_t USB_StringDescriptor[] = {
+@@ -32,9 +32,15 @@ const uint8_t USB_DeviceDescriptor[] = {
+   USB_DEVICE_DESC_SIZE,              /* bLength */
+   USB_DEVICE_DESCRIPTOR_TYPE,        /* bDescriptorType */
+   WBVAL(0x0200), /* 2.0 */           /* bcdUSB */
++#ifdef HX421_DEV_TERMINAL
++  0xEF,                              /* bDeviceClass: Misc (composite w/ IAD) */
++  0x02,                              /* bDeviceSubClass: common class */
++  0x01,                              /* bDeviceProtocol: Interface Association */
++#else
+   USB_DEVICE_CLASS_COMMUNICATIONS,   /* bDeviceClass CDC*/
+   0x00,                              /* bDeviceSubClass */
+   0x00,                              /* bDeviceProtocol */
++#endif
+   USB_MAX_PACKET0,                   /* bMaxPacketSize0 */
+   WBVAL(0x1209),                     /* idVendor */
+   WBVAL(0x5A22),                     /* idProduct */
+@@ -47,23 +53,41 @@ const uint8_t USB_DeviceDescriptor[] = {
+ 
+ /* USB Configuration Descriptor */
+ /*   All Descriptors (Configuration, Interface, Endpoint, Class, Vendor */
++/* The dev build is a composite: CDC-ACM terminal (IF0+IF1) + Mass Storage (IF2,
++ * bulk on EP3). #ifdef keeps the stock single-CDC descriptor intact. */
++#ifdef HX421_DEV_TERMINAL
++#define HX421_CFG_LEN (1*USB_CONFIGURATION_DESC_SIZE + 8 /*IAD*/ \
++                     + 1*USB_INTERFACE_DESC_SIZE + 0x13 + 1*USB_ENDPOINT_DESC_SIZE \
++                     + 1*USB_INTERFACE_DESC_SIZE + 2*USB_ENDPOINT_DESC_SIZE \
++                     + 1*USB_INTERFACE_DESC_SIZE + 2*USB_ENDPOINT_DESC_SIZE /*MSC*/)
++#define HX421_NUM_IF 0x03
++#else
++#define HX421_CFG_LEN (1*USB_CONFIGURATION_DESC_SIZE + 1*USB_INTERFACE_DESC_SIZE + 0x13 \
++                     + 1*USB_ENDPOINT_DESC_SIZE + 1*USB_INTERFACE_DESC_SIZE + 2*USB_ENDPOINT_DESC_SIZE)
++#define HX421_NUM_IF 0x02
++#endif
+ const uint8_t USB_ConfigDescriptor[] = {
+ /* Configuration 1 */
+   USB_CONFIGURATION_DESC_SIZE,       /* bLength */
+   USB_CONFIGURATION_DESCRIPTOR_TYPE, /* bDescriptorType */
+-  WBVAL(                             /* wTotalLength */
+-    1*USB_CONFIGURATION_DESC_SIZE +
+-    1*USB_INTERFACE_DESC_SIZE     +  /* communication interface */
+-    0x0013                        +  /* CDC functions */
+-    1*USB_ENDPOINT_DESC_SIZE      +  /* interrupt endpoint */
+-    1*USB_INTERFACE_DESC_SIZE     +  /* data interface */
+-    2*USB_ENDPOINT_DESC_SIZE         /* bulk endpoints */
+-      ),
+-  0x02,                              /* bNumInterfaces */
++  WBVAL(HX421_CFG_LEN),              /* wTotalLength */
++  HX421_NUM_IF,                      /* bNumInterfaces */
+   0x01,                              /* bConfigurationValue: 0x01 is used to select this configuration */
+   0x00,                              /* iConfiguration: no string to describe this configuration */
+   USB_CONFIG_SELF_POWERED,           /* bmAttributes */
+   USB_CONFIG_POWER_MA(100),          /* bMaxPower, device power consumption is 100 mA */
++#ifdef HX421_DEV_TERMINAL
++/* Interface Association Descriptor: groups IF0+IF1 as one CDC-ACM function so a
++ * composite host binds usbser to the CDC and the MSC driver to IF2. */
++  0x08,                              /* bLength */
++  0x0B,                              /* bDescriptorType: IAD */
++  USB_CDC_CIF_NUM,                   /* bFirstInterface */
++  0x02,                              /* bInterfaceCount */
++  CDC_COMMUNICATION_INTERFACE_CLASS, /* bFunctionClass */
++  CDC_ABSTRACT_CONTROL_MODEL,        /* bFunctionSubClass */
++  0x00,                              /* bFunctionProtocol */
++  0x00,                              /* iFunction */
++#endif
+ /* Interface 0, Alternate Setting 0, Communication class interface descriptor */
+   USB_INTERFACE_DESC_SIZE,           /* bLength */
+   USB_INTERFACE_DESCRIPTOR_TYPE,     /* bDescriptorType */
+@@ -141,6 +165,32 @@ const uint8_t USB_ConfigDescriptor[] = {
+   USB_ENDPOINT_TYPE_BULK,            /* bmAttributes */
+   WBVAL(USB_CDC_BUFINSIZE),            /* wMaxPacketSize */
+   0x00,                              /* bInterval: ignore for Bulk transfer */
++#ifdef HX421_DEV_TERMINAL
++/* Interface 2: USB Mass Storage (Bulk-Only Transport, SCSI transparent) */
++  USB_INTERFACE_DESC_SIZE,           /* bLength */
++  USB_INTERFACE_DESCRIPTOR_TYPE,     /* bDescriptorType */
++  0x02,                              /* bInterfaceNumber: IF2 */
++  0x00,                              /* bAlternateSetting */
++  0x02,                              /* bNumEndpoints: 2 bulk */
++  0x08,                              /* bInterfaceClass: Mass Storage */
++  0x06,                              /* bInterfaceSubClass: SCSI transparent command set */
++  0x50,                              /* bInterfaceProtocol: Bulk-Only Transport */
++  0x00,                              /* iInterface */
++/* Endpoint, EP3 Bulk Out (MSC) */
++  USB_ENDPOINT_DESC_SIZE,            /* bLength */
++  USB_ENDPOINT_DESCRIPTOR_TYPE,      /* bDescriptorType */
++  USB_ENDPOINT_OUT(3),               /* bEndpointAddress */
++  USB_ENDPOINT_TYPE_BULK,            /* bmAttributes */
++  WBVAL(64),                         /* wMaxPacketSize */
++  0x00,                              /* bInterval */
++/* Endpoint, EP3 Bulk In (MSC) */
++  USB_ENDPOINT_DESC_SIZE,            /* bLength */
++  USB_ENDPOINT_DESCRIPTOR_TYPE,      /* bDescriptorType */
++  USB_ENDPOINT_IN(3),                /* bEndpointAddress */
++  USB_ENDPOINT_TYPE_BULK,            /* bmAttributes */
++  WBVAL(64),                         /* wMaxPacketSize */
++  0x00,                              /* bInterval */
++#endif
+ /* Terminator */
+   0                                  /* bLength */
+ };
+@@ -167,6 +217,20 @@ const uint8_t USB_StringDescriptor[] = {
    '1',0,
  /* Index 0x02: Product */
  /* TODO: Identify as FXPAK Pro from Mk3 Rev.B onwards */
@@ -282,7 +410,7 @@ index 6f203e4..070eab9 100644
    (7*2 + 2),                         /* bLength (7 Char + Type + lenght) */
    USB_STRING_DESCRIPTOR_TYPE,        /* bDescriptorType */
    's',0,
-@@ -176,6 +190,7 @@ const uint8_t USB_StringDescriptor[] = {
+@@ -176,6 +240,7 @@ const uint8_t USB_StringDescriptor[] = {
    'n',0,
    'e',0,
    's',0,
@@ -291,26 +419,41 @@ index 6f203e4..070eab9 100644
  /* TODO: deploy a real serial number here */
    (12*2 + 2),                        /* bLength (12 Char + Type + lenght) */
 diff --git a/src/usbuser.c b/src/usbuser.c
-index 3354b4a..0573230 100644
+index 3354b4a..00594f7 100644
 --- a/src/usbuser.c
 +++ b/src/usbuser.c
-@@ -27,6 +27,9 @@
+@@ -27,6 +27,10 @@
  #include "usbcore.h"
  #include "usbuser.h"
  #include "cdcuser.h"
 +#ifdef HX421_DEV_TERMINAL
 +#include "hx421_termcdc.h"
++#include "hx421_msc.h"
 +#endif
  
  extern unsigned char soft_bulkin_int;
  
-@@ -122,6 +125,9 @@ void USB_Configure_Event (void) {
+@@ -122,6 +126,10 @@ void USB_Configure_Event (void) {
      /* add your code here */
      //saturnu new - org: not there:>
  	CDC_block_conf ();
 +#ifdef HX421_DEV_TERMINAL
 +	term_reset();          /* fresh connection: clear any wedged TX state */
++	msc_reset();           /* reset the mass-storage BOT state machine    */
 +#endif
    }
  }
  #endif
+@@ -225,6 +233,12 @@ void USB_EndPoint2 (uint32_t event) {
+  */
+ 
+ void USB_EndPoint3 (uint32_t event) {
++#ifdef HX421_DEV_TERMINAL
++  switch (event) {
++    case USB_EVT_OUT: msc_bulk_out(); break;   /* CBW or WRITE(10) data */
++    case USB_EVT_IN:  msc_bulk_in();  break;    /* READ(10) data / CSW done */
++  }
++#endif
+ }
+ 
+ 
