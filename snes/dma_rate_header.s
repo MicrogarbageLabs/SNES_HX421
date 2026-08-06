@@ -1,7 +1,7 @@
 ; ============================================================
 ;  dma_rate_header.s — plain LoROM header for the DMA rate test.
 ;
-;  carttype $00 (ROM only), NOT the $25 the H1 probe uses. This test needs
+;  carttype $00 (ROM only), NOT the $E4 the H1 probe uses. This test needs
 ;  no coprocessor: it measures a property of the CONSOLE, so it runs on the
 ;  stock FXPak core with no bitstream swap and no risk to the card.
 ;

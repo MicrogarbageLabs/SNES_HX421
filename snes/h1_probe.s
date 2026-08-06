@@ -1,8 +1,8 @@
 ; ============================================================
 ;  h1_probe.s — hardware bring-up milestone H1 probe ROM
 ;
-;  A minimal standalone LoROM image whose header declares OBC1
-;  (map $30, carttype $25) so the FXPak loads /sd2snes/fpga_obc1.bi3 —
+;  A minimal standalone LoROM image whose header declares HX-421
+;  (map $30, carttype $E4) so the FXPak loads /sd2snes/fpga_hx421.bi3 —
 ;  which for this experiment is OUR bitstream. See docs/bringup.md.
 ;
 ;  THE SCREEN IS THE DIAGNOSTIC. The FXPak Pro is a sealed cartridge, so

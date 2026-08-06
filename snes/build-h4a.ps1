@@ -61,7 +61,7 @@ if (-not (Test-Path $probe)) { Warn "h2_probe.sfc missing - run .\snes\build-h2.
 
 Write-Host ""
 Write-Host "On the SD card:" -ForegroundColor Green
-Write-Host "  1. BACK UP /sd2snes/fpga_hx421.bi3 first (your H2 core / stock OBC1)"
+Write-Host "  1. BACK UP /sd2snes/fpga_hx421.bi3 first (your previous HX-421 core, if any)"
 Write-Host "  2. copy snes\build\fpga_hx421.bi3 -> /sd2snes/"
 Write-Host "  3. copy snes\build\h2_probe.sfc  -> anywhere browsable, run it"
 Write-Host ""

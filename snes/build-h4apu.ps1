@@ -7,7 +7,7 @@
   = the HX421_AUDIO_TONE build). It unmutes the SNES DSP so the tone the FPGA is
   already generating becomes audible. No FPGA rebuild needed.
 
-  Same OBC1 header ($30/$25) as the other probes -> selects the tone core.
+  Same HX-421 header ($30/$E4) as the other probes -> selects the tone core.
 
   Public domain (CC0). No warranty.
 #>

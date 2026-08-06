@@ -15,7 +15,7 @@
 ;
 ;  One ROM, two outcomes, and the failing case is the ROM's own filler — so
 ;  there is no way to mistake "our core did nothing" for "the test did not
-;  run". A header declaring OBC1 ($30/$25) selects /sd2snes/fpga_obc1.bi3.
+;  run". A header declaring HX-421 ($30/$E4) selects /sd2snes/fpga_hx421.bi3.
 ;
 ;  Public domain (CC0). No warranty.
 ; ============================================================

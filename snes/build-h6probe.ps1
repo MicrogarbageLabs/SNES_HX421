@@ -1,7 +1,7 @@
 <#
   build-h6probe.ps1 — assemble the 6b PSRAM-probe ROM.
   Run on the 6b core (HX421_AUDIO_MIXER build = mixer + MIX_RD probe).
-  Produces snes\build\h6_probe.sfc. Same OBC1 header -> selects fpga_hx421.bi3.
+  Produces snes\build\h6_probe.sfc. Same HX-421 header -> selects fpga_hx421.bi3.
   Public domain (CC0). No warranty.
 #>
 $ErrorActionPreference = "Stop"

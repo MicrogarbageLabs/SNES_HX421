@@ -8,7 +8,7 @@
   we can see which stage of the DAC seam is dead on real hardware. Needs the tone
   core (HX421_AUDIO_TONE) flashed; run it like h2_probe.sfc.
 
-  Same OBC1 header ($30/$25) as h2_probe so the FXPak selects /sd2snes/fpga_hx421.bi3.
+  Same HX-421 header ($30/$E4) as h2_probe so the FXPak selects /sd2snes/fpga_hx421.bi3.
 
   Public domain (CC0). No warranty.
 #>

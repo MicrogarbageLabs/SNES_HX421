@@ -4,7 +4,7 @@
     .\snes\build-h1.ps1
 
   Produces, in snes\build\:
-    h1_probe.sfc     128 KB LoROM, header declares OBC1 (map $30 / type $25)
+    h1_probe.sfc     128 KB LoROM, header declares HX-421 (map $30 / type $E4)
     fpga_hx421.bi3    the baseline bitstream, RLE-packed for the FXPak MCU
 
   Copy BOTH to the SD card:

@@ -1,7 +1,7 @@
 <#
   build-h6dsp.ps1 — assemble the execute-from-WRAM test on the 6b.1b core.
   Boots, unmutes, plays the PSRAM sine, then jml's into a WRAM spin loop so the
-  cart bus is 100% free for the mixer. Same OBC1 header -> selects fpga_hx421.bi3.
+  cart bus is 100% free for the mixer. Same HX-421 header -> selects fpga_hx421.bi3.
   Public domain (CC0). No warranty.
 #>
 $ErrorActionPreference = "Stop"

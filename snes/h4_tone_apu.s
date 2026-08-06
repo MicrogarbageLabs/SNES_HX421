@@ -3,7 +3,7 @@
 ;
 ;  The tone core drives correct, full-volume I2S (proven: sim + the on-hardware
 ;  diagnostic + the base-slot MSU test where the tone WAS audible). The only
-;  reason the plain OBC1 probe was silent: a bare ROM never initializes the SNES
+;  reason the plain HX-421 probe was silent: a bare ROM never initializes the SNES
 ;  APU/DSP, so the console leaves its audio output muted -- and the cartridge
 ;  audio-in (where the MSU DAC and our tone inject) rides through that same muted
 ;  stage. An MSU-1 game unmutes it as a side effect; this ROM does it directly.

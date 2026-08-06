@@ -18,7 +18,7 @@
 ;  transfers. A single measurement cannot tell those apart, and the answer
 ;  changes how the emitted DMA body should be structured.
 ;
-;  Plain LoROM, carttype $00 — no OBC1 header, so it runs on the stock
+;  Plain LoROM, carttype $00 — no HX-421 header, so it runs on the stock
 ;  FXPak core and needs no bitstream swap. What it measures is a property
 ;  of the console, not of the cartridge.
 ;

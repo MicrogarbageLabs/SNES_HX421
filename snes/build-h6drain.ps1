@@ -1,6 +1,6 @@
 <#
   build-h6_drain.ps1 — assemble the 6b.1b PSRAM-sine ROM (mixer reads its wavetable
-  from PSRAM). Run on the 6b.1b core. Same OBC1 header -> selects fpga_hx421.bi3.
+  from PSRAM). Run on the 6b.1b core. Same HX-421 header -> selects fpga_hx421.bi3.
   Public domain (CC0). No warranty.
 #>
 $ErrorActionPreference = "Stop"

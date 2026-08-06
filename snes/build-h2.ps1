@@ -4,7 +4,7 @@
     .\snes\build-h2.ps1
 
   Produces, in snes\build\:
-    h2_probe.sfc     LoROM, OBC1 header, reads $F000-$F003 and reports
+    h2_probe.sfc     LoROM, HX-421 header, reads $F000-$F003 and reports
     fpga_hx421.bi3    the h2_sig bitstream, RLE-packed
 
   The SAME ROM reads $FF filler on the stock core and 'H','X','4','2' on
@@ -61,11 +61,11 @@ if ($type -ne 0xE4) { throw ("carttype is {0:X2}, expected E4 (HX-421)" -f $type
 Step "carttype E4 -> selects /sd2snes/fpga_hx421.bi3"
 
 # ---- an emulator-testable twin -------------------------------------------
-# bsnes-plus reads the SAME header and instantiates its OBC1 chip, then
-# access-violates on a ROM that is not an OBC1 game. The coprocessor header
-# is only needed by the FXPak for core SELECTION, so the emulator build is
-# byte-identical apart from carttype $00 and its checksum. It exercises the
-# read, compare and display paths; only the FPGA half goes untested.
+# The HX-421 carttype ($E4) means nothing to bsnes-plus, and the coprocessor
+# header is only needed by the FXPak for core SELECTION. So the emulator build is
+# byte-identical apart from carttype $00 (a plain ROM bsnes-plus runs cleanly) and
+# its checksum. It exercises the read, compare and display paths; only the FPGA
+# half goes untested.
 $emu = Join-Path $out "h2_probe_emu.sfc"
 $eb = [System.IO.File]::ReadAllBytes($sfc)
 $eb[$hdr + 0x16] = 0x00
