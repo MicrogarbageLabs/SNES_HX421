@@ -193,7 +193,17 @@ Cyclone IV partial reconfig isn't worth it and a full reconfig blanks the fabric
 - **Auto map strip builder + metatile fetch** — scroll-triggered VRAM fill from the metatile map. The
   biggest CPU win for a scrolling RPG: the 65816 no longer rebuilds the wrapping edge column/row on
   every tile boundary. Hardware form of the sengine metatile engine + the `layer_goto` sliding-window work.
+- **FMV prep engine (NMI DMA staging)** — reads decoded frames from PSRAM (streamed there by the
+  arbiter) and lays them into the BRAM staging area in the exact chunked layout the SNES NMI handler
+  DMAs to VRAM, per-sub-frame (the "fabric does fixed-function staging" of `docs/fmv-engine.md`). For
+  RPG cutscenes. The BRAM it fills is already the per-frame staging budget (12 blocks) — the engine
+  is the sequencer + offset/length math, ~no new M9K.
 - **8-ch mixer** — the existing RTL, fed by the arbiter.
+
+**Strip builder ⇄ FMV prep can share one staging core.** Both are PSRAM→BRAM staging engines feeding
+NMI DMA, and they are **never active at the same time** (FMV during cutscenes, strip builder during
+scrolling gameplay). If LE gets tight, build one PSRAM→BRAM staging core with two modes rather than
+paying for both — a natural fallback that also shares the staging BRAM.
 
 **No collider.** RPG collision is cheap on the 65816 (tile-grid lookups); pixel-perfect is
 action-game overkill. Its M9K is reallocated to the metatile cache.
@@ -242,7 +252,11 @@ doesn't use — `bsx` 762, `cheat` 550, `ctx` 790, `rtc`+`srtc` 989, `msu` 148 (
 | scene engine | ~1,000–1,500 | *estimate (unbuilt)* |
 | actor priority (OAM depth-sort + flicker rotation) | ~1,500–2,500 | *estimate* |
 | map strip builder + metatile fetch | ~1,500–2,500 | *estimate* |
-| **full RPG core** | **~9,850–12,350 (64–80%)** | **fits, 20–36% headroom** |
+| FMV prep engine (NMI DMA staging) | ~1,000–2,000 | *estimate; shares infra w/ strip builder* |
+| **full RPG core** | **~10,850–14,350 (70–93%)** | **fits; tighter at top end** |
+
+If the top-end estimate is too close for comfort, the strip-builder ⇄ FMV-prep shared-staging-core
+fallback (above) reclaims most of the FMV-prep line, since the two never run simultaneously.
 
 M9K lands ~37/56 blocks (66%) with everything (mixer FIFOs 13, metatile cache 5, DMA staging 12) —
 not the bottleneck. DSP 24/112 (21%). **Pins are the tight resource at 144/166 (87%)**, but the three
