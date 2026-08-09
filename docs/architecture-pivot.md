@@ -250,23 +250,25 @@ features are internal logic and add ~no I/O. Verdict: **fits the EP4CE15 provide
 purpose-stripped** (drop BS-X/cheat/ctx/MSU/RTC) — which the mirror-64K/execute-from-WRAM base does
 anyway. Caveats: the three feature figures are estimates; a rough synth would tighten them.
 
-### Cart RAM & saves
-The RPG gets a real **64 KB cart-RAM window on the RAM-select signal + A[15:0]** — same "ignore the
-top 8 bits, no bank logic" simplicity as the ROM window, so it adds only `RAMSEL` to the decode. The
-SNES reads/writes SRAM normally (standard save code); no save-streaming mailbox needed.
+### Saves: mailbox to an SD file, no cart RAM (decided 2026-08-06)
+**No cart RAM at all** — not a PSRAM window, not BRAM. Working memory is the SNES's 128 KB WRAM,
+full stop. This keeps the decode at just `CARTSEL + /RD + A[15:0]` (no `RAMSEL`, even less logic) and
+sidesteps the fact that the FXPak has no separate cart-RAM chip (its memory is two bus-sharing PSRAM
+chips, 2 × 64 Mbit; `hardware-budget.md`).
 
-**Topology (checked 2026-08-06): there is NO separate cart-RAM chip — save RAM is a region of the
-shared PSRAM.** The FXPak's memory is two PSRAM chips (2 × 64 Mbit, ~16 MB) that share address/data/
-OE-WE/byte-enable buses; the dual chip-enables are capacity, not independent banks (`hardware-budget.md`).
-Stock sd2snes already places save-RAM there (`memory.c` `srambase`/`set_saveram_base` → a PSRAM
-ramslot). A 64 KB window can't live in BRAM (that's the whole 63 KB M9K budget), so it must be a PSRAM
-region reached on `RAMSEL`. This is fine — the "contention" that drove BRAM staging is a non-issue for
-saves because an RPG touches save-RAM only at **save points** (working state lives in the 128 KB
-WRAM), so those accesses are rare and don't collide with the sound engine. The earlier
-"separate contention-free chip" option is **not available** — plan on the shared-PSRAM region.
-Persistence to SD: reuse the stock sd2snes **SRAM→.srm** writeback (declare the 64 KB SRAM size in the
-ROM header and the firmware flushes it), or a "flush save" mailbox trigger where the firmware reads
-the region via the FPGA. 64 KB is generous for an RPG and needs no higher-bank decode.
+Saves are **serialized to / deserialized from an SD file over a byte mailbox** — the write-direction
+twin of the existing joypad **read**-mailbox:
+- **Save:** at a save point the game serializes its state and writes bytes sequentially to a
+  **data-write mailbox**; the ARM drains it through FatFs into an SD file. Explicit serialize (not a
+  raw WRAM dump) → a versionable save format.
+- **Load:** reverse — the ARM reads the file, the SNES pulls bytes from a read-mailbox (same
+  mechanism as joypad reads).
+
+Notes: FatFs lives on the ARM, so the save mailbox adds one small ARM job (core-load + audio arbiter
++ save drain — still minimal). SD is muxed, so a save-write is just another consumer the stream
+arbiter serializes; it happens at a save point (menu/pause), so it doesn't fight active music/FMV.
+Throughput is a non-issue — an RPG save is a few KB, rare, and a save screen tolerates a few ms of
+byte-mailboxing.
 
 ## Next steps
 
