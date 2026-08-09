@@ -232,6 +232,18 @@ staging, so a full 64K mirror is out; mirror a small stub and stream the rest to
 a small boot stub keeps M9K for staging. Whether scene + priority + strip-builder + mixer all fit the
 EP4CE15 together still needs a tally — the feature-selectable variants are the escape hatch if tight.
 
+### Cart RAM & saves
+The RPG gets a real **64 KB cart-RAM window on the RAM-select signal + A[15:0]** — same "ignore the
+top 8 bits, no bank logic" simplicity as the ROM window, so it adds only `RAMSEL` to the decode. The
+SNES reads/writes SRAM normally (standard save code); no save-streaming mailbox needed. Topology to
+confirm: if the FXPak's cart RAM is a **separate** chip from the audio/map PSRAM, the window is
+contention-free and direct; if it's a region of the same PSRAM (the contention that drove BRAM
+staging), it's still fine because an RPG only touches SRAM at **save points** — working state lives in
+the 128 KB WRAM — so those writes are rare. Persistence to SD: reuse the stock sd2snes **SRAM→.srm**
+writeback (declare the 64 KB SRAM size in the ROM header and the firmware flushes it), or a "flush
+save" mailbox trigger where the firmware reads the region via the FPGA. 64 KB is generous for an RPG
+and needs no higher-bank decode.
+
 ## Next steps
 
 1. **PC first.** Split `hx421.dll` internally into "STM32 side" and "FPGA side" so the boundary that
