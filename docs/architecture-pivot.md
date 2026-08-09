@@ -173,6 +173,65 @@ made, but by the architecture moving underneath them. Any future "we chose X bec
 should be re-checked against measured numbers before it drives RTL — assumptions here have run 5x
 off in both directions.
 
+## RPG re-scope (2026-08-06): SNES runs the game, FPGA accelerates, ARM minimal
+
+A deliberate scope cut to ship an RPG. The premise above (STM32 runs game logic, FPGA is a toolbox)
+is **reversed for the RPG**: the SNES 65816 runs the game in its 128 KB WRAM (plenty for an RPG), the
+FPGA is a feature accelerator, and the ARM is nearly idle — its only jobs are loading the core and
+running the audio stream arbiter. The ARM + streamer are **reserved for a future 3D title**, not the RPG.
+
+### Feature-selectable core
+The per-game core-load mechanism (now `FPGA_HX421`, carttype `$E4` → `/sd2snes/fpga_hx421.bi3`)
+generalizes to **variants**: each is a different feature subset packed to fit the EP4CE15, selected at
+**load time** by carttype (`$E4` = RPG core, a later `$E5` = 3D core, …). Load-time, not runtime —
+Cyclone IV partial reconfig isn't worth it and a full reconfig blanks the fabric.
+
+### RPG core feature set
+- **Scene engine** — screen/layer composition.
+- **Actor priority** — OAM depth-sort + flicker-rotation for overhead sprites (offloads the 65816's
+  per-frame sprite sort; spreads the 32-sprite/scanline dropout across frames instead of vanishing).
+- **Auto map strip builder + metatile fetch** — scroll-triggered VRAM fill from the metatile map. The
+  biggest CPU win for a scrolling RPG: the 65816 no longer rebuilds the wrapping edge column/row on
+  every tile boundary. Hardware form of the sengine metatile engine + the `layer_goto` sliding-window work.
+- **8-ch mixer** — the existing RTL, fed by the arbiter.
+
+**No collider.** RPG collision is cheap on the 65816 (tile-grid lookups); pixel-perfect is
+action-game overkill. Its M9K is reallocated to the metatile cache.
+
+### Memory model: PSRAM bulk, BRAM staging
+Everything bulk lives in **PSRAM** — the **metatile map is PSRAM-resident, not SD-streamed** — with
+**BRAM (M9K) as the staging area for everything**. This is the fix for the timing conflict found when
+the SNES and the sound engine both hit PSRAM directly: consumers touch BRAM (fast, contention-free)
+and BRAM is refilled from PSRAM on a schedule. Strip builder: metatile PSRAM→BRAM→VRAM. Mixer: audio
+PSRAM→BRAM→DAC.
+
+### Stream arbiter (audio + FMV), core-gated
+The ARM stream arbiter (built + host-tested) streams audio/FMV **files** SD→PSRAM rings via FatFs
+(fragmentation-tolerant, seek-by-name) — chosen over a raw contiguous blob for flexibility and
+because it feeds the high-quality mixer. Firmware coupling is small and additive:
+- **Core-keyed switch:** `load_rom` sets an `audio_core_active` flag when the loaded core is an HX-421
+  audio variant; the main loop runs the arbiter only when set. Stock cores / menu / ROM-load / save
+  states are untouched.
+- **Command mailbox:** the SNES writes play/seek/stop to an FPGA register; the ARM polls it and drives
+  the arbiter. Same shape as the copro command channel.
+
+### Simplified address decode + execute-from-WRAM
+The SNES sees only a small **BRAM boot stub mirrored across all banks** — decode is just
+**CARTSEL + /RD + A[15:0]**, ignoring the top 8 address bits and all bank/HiROM/LoROM/region logic.
+That sheds a meaningful chunk of mapper LEs. It is the scheme already proven on the H745 kernel
+(`snes-kernel.md`: 16-bit decode, mirror, run-from-WRAM) and the execute-from-WRAM model:
+1. On HX-421 core load, the FPGA loads a selected SD file into BRAM — this **is** the ROM the SNES
+   boots (the boot stub); no firmware ROM-load path needed.
+2. The stub copies/streams the engine into WRAM and `jmp`s there; the engine runs from WRAM.
+3. PSRAM is left to the FPGA (map, audio, FMV); a small register window carries SNES→FPGA commands.
+
+Keep the BRAM stub **small** — total M9K is only 63 KB, shared with the metatile cache + audio
+staging, so a full 64K mirror is out; mirror a small stub and stream the rest to WRAM.
+
+**Net LE/M9K:** simplified decode frees LEs; dropping the collider frees M9K for the metatile cache;
+a small boot stub keeps M9K for staging. Whether scene + priority + strip-builder + mixer all fit the
+EP4CE15 together still needs a tally — the feature-selectable variants are the escape hatch if tight.
+
 ## Next steps
 
 1. **PC first.** Split `hx421.dll` internally into "STM32 side" and "FPGA side" so the boundary that
