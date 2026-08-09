@@ -229,8 +229,26 @@ Keep the BRAM stub **small** — total M9K is only 63 KB, shared with the metati
 staging, so a full 64K mirror is out; mirror a small stub and stream the rest to WRAM.
 
 **Net LE/M9K:** simplified decode frees LEs; dropping the collider frees M9K for the metatile cache;
-a small boot stub keeps M9K for staging. Whether scene + priority + strip-builder + mixer all fit the
-EP4CE15 together still needs a tally — the feature-selectable variants are the escape hatch if tight.
+a small boot stub keeps M9K for staging.
+
+### LE/M9K tally (2026-08-06) — fits, given a stripped base
+From the measured fit reports (`fpga/build/h2_base`, `fpga/cores/mixer`): `h2_base` = **9,091 LE (59%)**
+but that already bundles the mixer (`hx_mixer_dac` ~3,050 LE) **and** stock sd2snes features the RPG
+doesn't use — `bsx` 762, `cheat` 550, `ctx` 790, `rtc`+`srtc` 989, `msu` 148 (**~3,240 LE strippable**).
+
+| component | ~LE | |
+|---|---|---|
+| stripped ROM-load base (mirror-64K decode) + 8-ch mixer | ~5,850 (38%) | measured, minus strippable |
+| scene engine | ~1,000–1,500 | *estimate (unbuilt)* |
+| actor priority (OAM depth-sort + flicker rotation) | ~1,500–2,500 | *estimate* |
+| map strip builder + metatile fetch | ~1,500–2,500 | *estimate* |
+| **full RPG core** | **~9,850–12,350 (64–80%)** | **fits, 20–36% headroom** |
+
+M9K lands ~37/56 blocks (66%) with everything (mixer FIFOs 13, metatile cache 5, DMA staging 12) —
+not the bottleneck. DSP 24/112 (21%). **Pins are the tight resource at 144/166 (87%)**, but the three
+features are internal logic and add ~no I/O. Verdict: **fits the EP4CE15 provided the base is
+purpose-stripped** (drop BS-X/cheat/ctx/MSU/RTC) — which the mirror-64K/execute-from-WRAM base does
+anyway. Caveats: the three feature figures are estimates; a rough synth would tighten them.
 
 ### Cart RAM & saves
 The RPG gets a real **64 KB cart-RAM window on the RAM-select signal + A[15:0]** — same "ignore the
