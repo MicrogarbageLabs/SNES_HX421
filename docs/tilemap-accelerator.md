@@ -159,6 +159,32 @@ Status: designed, not yet in RTL. It is a request-port + result-buffer extension
 `fpga/cores/strip/hx_strip.v`; open semantics to pin before building — what it returns (raw metatile
 index / full tilemap entry / a derived terrain attribute), point vs rect, and queries/frame budget.
 
+## Two priorities: sprite-vs-sprite vs sprite-vs-BG (the canopy/bridge cheat)
+
+Position and draw-priority are independent. An actor is *positioned* in the top layer's camera frame
+(§Actor↔layer queries), but the SNES has **two separate priorities**:
+
+- **sprite-vs-sprite** — OAM *index* order — is the actor-priority engine's job (Y-depth sort +
+  overload flicker, `fpga/cores/actor`);
+- **sprite-vs-BG** — each sprite's 2-bit **OBJ priority** in its attr byte — is set by the game and
+  passed through unchanged (the actor engine emits the attr byte verbatim).
+
+So a sprite positioned "on" BG1 can still be drawn **behind** part of BG1 — the layer canopies it.
+This composes for free from the two engines, no special feature:
+
+- the **strip engine** copies the whole tilemap entry incl. the **per-tile priority bit** (bit 13),
+  so a canopy — bridge deck, tree tops, cave overhang — is just a metatile authored high-priority;
+- set the sprite's OBJ priority **below** those high-priority tiles and **above** the low-priority
+  ground, and the actor is drawn over the ground but **under the bridge** automatically — per-region,
+  because the priority lives in the tiles, not in global state.
+
+That is the **multi-tier cheat**: bridges, overpasses, building interiors, layered dungeons — fake Z
+from tile-priority + sprite OBJ-priority, no depth buffer. Cases tile-priority can't express are still
+covered by toggling a sprite's OBJ-priority bit dynamically (just a bit in the attr byte the engine
+forwards). The Y-depth OAM ordering resolves sprite-vs-sprite occlusion *within* an OBJ-priority tier —
+where it matters — so it composes with the BG tiers; depth-sorting within each tier separately is an
+optional refinement.
+
 ## CHR is RESIDENT, not streamed
 
 The accelerator moves **tilemap entries only**. Tile graphics live in VRAM for the duration of

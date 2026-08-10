@@ -188,7 +188,9 @@ Cyclone IV partial reconfig isn't worth it and a full reconfig blanks the fabric
 
 ### RPG core feature set
 - **Scene engine** — screen/layer composition.
-- **Actor priority** — OAM depth-sort + flicker-rotation for overhead sprites (offloads the 65816's
+- **Actor priority** — **sprite-vs-sprite** OAM depth-sort + flicker-rotation (NOT sprite-vs-BG:
+  the sprite's OBJ priority bits stay game-controlled and pass through, enabling BG canopy / bridge
+  multi-tier tricks — see docs/tilemap-accelerator.md). Offloads the 65816's
   per-frame sprite sort; spreads the 32-sprite/scanline dropout across frames instead of vanishing).
 - **Auto map strip builder + metatile fetch** — scroll-triggered VRAM fill from the metatile map. The
   biggest CPU win for a scrolling RPG: the 65816 no longer rebuilds the wrapping edge column/row on
