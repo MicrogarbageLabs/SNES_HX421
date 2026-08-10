@@ -128,6 +128,30 @@ plus their def sets — a lot of PSRAM, but trivial against ~16 MB (`map_rows`/`
 addresses per layer, §PSRAM layout). Only VRAM is tight (Mode 1: 2×4bpp + 1×2bpp CHR + 3 tilemaps),
 per §Parallax.
 
+## Actor ↔ layer metatile queries (the map's only read path for the SNES)
+
+The same fetch datapath that builds strips is a point lookup — "what tile/metatile is at world
+(x,y) on layer L" is exactly the two-level metatile→def fetch, just addressed by an actor position
+instead of a window walk. So the strip engine doubles as a **metatile query service**, and there is a
+hard reason to expose it: **the SNES never reads PSRAM** (core architecture) and the metatile map
+lives in PSRAM, so a query is the *only* way SNES game logic can learn what is under an actor. Any
+map-aware actor behaviour — tile collision, terrain type (water/ledge/wall), triggers, "am I standing
+on X" — goes through it.
+
+- An actor is assigned **one or more layers**; the engine answers the metatile/tile it intersects on
+  each (foreground collision on BG1, water on BG3, …). Point or small-rect footprint.
+- Reuses the measured fetch core (721 LE datapath); the added cost is a query request port + a result
+  mailbox, not a second engine. The strip walk and actor queries **share the one datapath + PSRAM
+  port**, so they arbitrate: strip building is the per-frame bulk load, queries interleave or run in a
+  separate phase.
+- This is **tile/metatile-granularity map query, NOT the dropped pixel-perfect mask collider** — it
+  accelerates the cheap tile-grid lookup that would otherwise sit on the 65816, and it exists because
+  the 65816 *cannot* do the PSRAM lookup itself.
+
+Status: designed, not yet in RTL. It is a request-port + result-buffer extension of
+`fpga/cores/strip/hx_strip.v`; open semantics to pin before building — what it returns (raw metatile
+index / full tilemap entry / a derived terrain attribute), point vs rect, and queries/frame budget.
+
 ## CHR is RESIDENT, not streamed
 
 The accelerator moves **tilemap entries only**. Tile graphics live in VRAM for the duration of
