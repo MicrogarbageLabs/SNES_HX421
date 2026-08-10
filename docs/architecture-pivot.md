@@ -256,16 +256,22 @@ and ran a full fit on the EP4CE15 (Quartus 25.1std). Result:
 | **stripped ROM-load base (+ mirror-64K decode) + 8-ch mixer** | **5,010 (33%)** | **MEASURED (stub-strip fit)** |
 | scene engine (DMA-body / opcode composer) | **415 (3%), 3 M9K** | **MEASURED** (`fpga/cores/scene`) |
 | actor priority (depth-sort + overload flicker) | **827 (5%), 3 M9K** | **MEASURED** (`fpga/cores/actor`) |
-| map strip builder + metatile fetch (3-layer) | **2,060 (13%)** | **MEASURED** (`fpga/cores/strip`) |
-| FMV prep engine (NMI DMA staging) | ~1,000–2,000 | *estimate; shares infra w/ strip builder* |
-| **full RPG core (sum)** | **~9,300–10,300 (60–67%)** | **fits** |
+| map strip builder + metatile fetch (3-layer) | **2,060 (13%), 0 M9K** | **MEASURED** (`fpga/cores/strip`) |
+| FMV prep engine (NMI DMA staging) | **624 (4%), 0 M9K** | **MEASURED** (`fpga/cores/fmv`) |
+| **full RPG core (sum of ALL FIVE)** | **8,936 (58%)** | **all measured — fits** |
 
-**Caveat as the sum grows:** these are **standalone** per-module fits. The integrated core is not just
-their sum — it adds a **PSRAM-port arbiter** (strip/actor/FMV all read PSRAM) and **staging-BRAM write
-arbitration** + glue no single module carries, so the summed LE is a lower bound; budget ~+15–25% for
-integration. M9K also accumulates per module (measured base 4 + strip 0 + actor 3 + scene 3 = 10, plus
-the projected staging/cache buffers) and wants a combined-build check — but the 56-block budget has
-room. Even with integration overhead the core sits comfortably under the EP4CE15.
+**ALL FIVE components now measured, not estimated (2026-08-06).** Sum = **8,936 LE (58%)**. Every
+feature estimate is retired via a standalone EP4CE15 fit (Questa-clean RTL in `fpga/cores/{strip,
+actor,scene,fmv}` + the measured base/mixer). The only remaining unknown is integration overhead.
+
+**Caveat — sum ≠ integrated core.** These are **standalone** per-module fits. The integrated core adds
+a **PSRAM-port arbiter** (strip/actor/FMV all read PSRAM) and **staging-BRAM write arbitration** + glue
+no single module carries, so 8,936 is a lower bound; budget ~+15–25% (~2,000 LE) for integration →
+~11,000 LE ≈ 72%. Counter-pressure: strip and FMV never run simultaneously (gameplay vs cutscene) and
+can share one staging core, so the sum is also conservative. M9K accumulates per module (base 4 +
+strip 0 + actor 3 + scene 3 + fmv 0 = 10, plus the projected staging/cache buffers) — a combined-build
+check is the natural next step, but the 56-block budget has room. Bottom line: **the RPG core fits the
+EP4CE15 with real headroom, now on measured numbers rather than estimates.**
 
 **Strip builder measured (2026-08-06):** `fpga/cores/strip/hx_strip.v` — the hardware form of
 `runtime/hx421_metatile.c` + `hx_map_layer_goto`. The core fetch datapath (two-level metatile→def
@@ -302,8 +308,14 @@ DMA body the 65816 executes at NMI (execute-from-window): a PPU register preambl
 abs` per bank entry) then a VRAM DMA slot per descriptor (the strip/actor/FMV engines fill the
 descriptor list). Hardware form of `hx421_runtime.c`'s `e_lda_sta*`/`e_dma_vram_slot` opcode emitters
 — a byte-emitter FSM + register bank + descriptor list. **415 LE (3%), 3 M9K (bank+list in BRAM),
-0 DSP** — the smallest core, under the estimate. Four of five components now measured; only FMV prep
-remains an estimate.
+0 DSP** — the smallest core, under the estimate.
+
+**FMV prep measured (2026-08-06):** `fpga/cores/fmv/hx_fmv.v` — reads a decoded frame's sub-frame
+slice from PSRAM (CHR + tilemap) and stages it into the BRAM the SNES NMI DMAs, computing the
+double-buffered VRAM destination (CHR-overlap buffer A/B by parity) and emitting descriptors to the
+scene engine. A chunked PSRAM→BRAM bulk copy with sub-frame + double-buffer bookkeeping (shares the
+copy shape with the strip engine, no metatile lookup). **624 LE (4%), 0 M9K (staging external), 0 DSP**
+— under the 1–2K estimate. **All five core components are now measured.**
 
 The measured base came in **~840 LE below the earlier subtraction estimate (5,850)** — the fitter also
 removed dead glue the per-entity subtraction couldn't. Other measured facts from the probe: **all 24
