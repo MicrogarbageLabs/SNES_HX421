@@ -83,3 +83,9 @@ fpga/cores/mixer/synth/*.smsg
 synth/*.sld
 
 firmware/dev/qemu/build/
+
+# HDL co-sim artifacts
+*.hex
+gen_vectors.exe
+*_sim
+fpga/cores/**/tb/work/
