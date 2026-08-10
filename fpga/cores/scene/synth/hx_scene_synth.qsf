@@ -1,0 +1,5 @@
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE15F17C8
+set_global_assignment -name TOP_LEVEL_ENTITY hx_scene
+set_global_assignment -name VERILOG_FILE ../hx_scene.v
+set_instance_assignment -name VIRTUAL_PIN ON -to *
