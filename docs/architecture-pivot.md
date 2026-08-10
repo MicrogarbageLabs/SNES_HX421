@@ -253,10 +253,10 @@ and ran a full fit on the EP4CE15 (Quartus 25.1std). Result:
 |---|---|---|
 | **stripped ROM-load base (+ mirror-64K decode) + 8-ch mixer** | **5,010 (33%)** | **MEASURED (stub-strip fit)** |
 | scene engine | ~1,000–1,500 | *estimate (unbuilt)* |
-| actor priority (OAM depth-sort + flicker) | **1,176 (8%), 2 M9K** | **MEASURED** (`fpga/cores/actor`) |
+| actor priority (depth-sort + overload flicker) | **827 (5%), 3 M9K** | **MEASURED** (`fpga/cores/actor`) |
 | map strip builder + metatile fetch (3-layer) | **2,060 (13%)** | **MEASURED** (`fpga/cores/strip`) |
 | FMV prep engine (NMI DMA staging) | ~1,000–2,000 | *estimate; shares infra w/ strip builder* |
-| **full RPG core** | **~10,250–11,750 (66–76%)** | **fits** |
+| **full RPG core** | **~9,900–11,400 (64–74%)** | **fits** |
 
 **Strip builder measured (2026-08-06):** `fpga/cores/strip/hx_strip.v` — the hardware form of
 `runtime/hx421_metatile.c` + `hx_map_layer_goto`. The core fetch datapath (two-level metatile→def
@@ -274,9 +274,19 @@ network), OAM low-table emission in depth order, and per-band flicker rotation b
 Measured **1,176 LE (8%), 2 M9K, 0 DSP** (the 2 M9K is the 128×64b actor store). A cautionary
 measurement: the first cut sorted by every scanline (256-entry histogram + occupancy arrays), which
 synthesized to **6,389 LE** of muxes rather than BRAM — the fix was to depth-sort by **8-line Y-band**
-(~30 bands; visually fine for sprite draw order), a 5.4× LE cut. Follow-ons: exact per-scanline
-occupancy for flicker (vs per-band), OAM high-table packing. Three of five core components (base,
-strip, actor) are now measured.
+(~30 bands; visually fine for sprite draw order), a 5.4× LE cut.
+
+**Overload-flicker rewrite (2026-08-06):** the first cut's flicker was inadequate — it dropped the
+same sort-tail every frame (no fairness) and half-duplicated the PPU (which already drops sprites past
+32/line by OAM index order). Corrected model: the engine assigns **OAM indices** — a **priority-lock**
+band puts must-show actors (player/boss) at the lowest indices (survive per-line dropout always), and
+the **crowd is admitted through a per-frame rotating window** over the depth-sorted list, so both the
+per-line PPU dropout and the >128-slot overflow rotate fairly and every crowd actor cycles through
+visibility. The per-line occupancy array was removed (the PPU does per-line). Re-measured: **827 LE
+(5%), 3 M9K** — *smaller* than the flawed 1,176-LE first cut, because dropping the redundant per-line
+array outweighed the admission logic. Follow-ons: OAM high-table packing; on-hardware tuning of the
+depth-vs-fairness rotation rate (heavy flicker slightly disturbs strict occlusion order — inherent to
+the technique). Three of five core components (base, strip, actor) are now measured.
 
 The measured base came in **~840 LE below the earlier subtraction estimate (5,850)** — the fitter also
 removed dead glue the per-entity subtraction couldn't. Other measured facts from the probe: **all 24
