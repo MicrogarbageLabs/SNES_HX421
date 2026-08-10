@@ -260,18 +260,27 @@ and ran a full fit on the EP4CE15 (Quartus 25.1std). Result:
 | FMV prep engine (NMI DMA staging) | **624 (4%), 0 M9K** | **MEASURED** (`fpga/cores/fmv`) |
 | **full RPG core (sum of ALL FIVE)** | **8,936 (58%)** | **all measured — fits** |
 
-**ALL FIVE components now measured, not estimated (2026-08-06).** Sum = **8,936 LE (58%)**. Every
-feature estimate is retired via a standalone EP4CE15 fit (Questa-clean RTL in `fpga/cores/{strip,
-actor,scene,fmv}` + the measured base/mixer). The only remaining unknown is integration overhead.
+**ALL FIVE components measured (2026-08-06).** Every feature estimate retired via standalone EP4CE15
+fits (Questa-clean RTL in `fpga/cores/{strip,actor,scene,fmv}` + the measured base/mixer).
 
-**Caveat — sum ≠ integrated core.** These are **standalone** per-module fits. The integrated core adds
-a **PSRAM-port arbiter** (strip/actor/FMV all read PSRAM) and **staging-BRAM write arbitration** + glue
-no single module carries, so 8,936 is a lower bound; budget ~+15–25% (~2,000 LE) for integration →
-~11,000 LE ≈ 72%. Counter-pressure: strip and FMV never run simultaneously (gameplay vs cutscene) and
-can share one staging core, so the sum is also conservative. M9K accumulates per module (base 4 +
-strip 0 + actor 3 + scene 3 + fmv 0 = 10, plus the projected staging/cache buffers) — a combined-build
-check is the natural next step, but the 56-block budget has room. Bottom line: **the RPG core fits the
-EP4CE15 with real headroom, now on measured numbers rather than estimates.**
+**INTEGRATED BUILD + COMBINED FIT (2026-08-06).** `fpga/cores/rpg_top/hx_rpg_top.v` wires all five
+engines together with a shared **PSRAM read arbiter** (mixer vs a strip/FMV-muxed renderer port —
+they never run at once) and a **shared staging BRAM** with write arbitration among the four writers.
+Combined fit on the EP4CE15:
+
+| | integrated | note |
+|---|---|---|
+| **Logic elements** | **8,240 / 15,408 (53%)** | 5 engines + arbiter + staging + glue |
+| M9K | 17 / 56 (30%) | staging BRAM + actor store + scene bank + mixer FIFOs |
+| DSP (9-bit mult) | 24 / 112 (21%) | all the mixer's cubic interp |
+
+**Integration overhead is negligible — ~78 LE (~1%)**, not the +15–25% budgeted. Per-instance
+(comb. ALUTs): mixer 3,170, strip 1,586, actor 638, fmv 505, scene 299, **arbiter 35**. The
+strip/FMV renderer-port sharing avoided a third arbiter port; the staging mux is trivial. This
+integrated 8,240 LE does **not** include the SNES-bus/ROM-load decode from the base (~1,960 LE), so
+the **full cart core ≈ 10,200 LE ≈ 66%**, with ~34% headroom. M9K 30% and DSP 21% both have ample
+room. (Timing wasn't constrained in this resource harness — no SDC; the mixer timing-closes at 96 MHz
+standalone.) **The RPG core fits the EP4CE15 comfortably, on fully measured numbers.**
 
 **Strip builder measured (2026-08-06):** `fpga/cores/strip/hx_strip.v` — the hardware form of
 `runtime/hx421_metatile.c` + `hx_map_layer_goto`. The core fetch datapath (two-level metatile→def
