@@ -140,6 +140,13 @@ on X" — goes through it.
 
 - An actor is assigned **one or more layers**; the engine answers the metatile/tile it intersects on
   each (foreground collision on BG1, water on BG3, …). Point or small-rect footprint.
+- **Coordinate model: actors live in ONE world frame — the top (reference) layer's camera.** An actor
+  carries a single `(world_x, world_y)`, not one per layer. From it everything derives:
+  sprite/OAM screen position = `world − top_cam` (what the actor-priority path already uses); a
+  **top-layer** query is direct (`top_cam` cancels → lookup at `world`); a query on a **parallax**
+  layer L maps through the camera difference → lookup at `world + (L_cam − top_cam)`. The engine
+  already holds every layer's camera in context, so the parallax mapping is one adder on the query
+  address — the FPGA does it, the actor never tracks per-layer positions.
 - Reuses the measured fetch core (721 LE datapath); the added cost is a query request port + a result
   mailbox, not a second engine. The strip walk and actor queries **share the one datapath + PSRAM
   port**, so they arbitrate: strip building is the per-frame bulk load, queries interleave or run in a
