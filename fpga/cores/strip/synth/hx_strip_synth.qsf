@@ -1,0 +1,9 @@
+# Standalone resource-probe synthesis of the map strip builder, on the real part
+# (EP4CE15F17C8, same as the FXPak base core). Measures the strip-builder LE/M9K
+# against the measured 5,010-LE stripped base. Not a bitstream. Top-level ports
+# become virtual pins so the pin limit is irrelevant to the logic measurement.
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE15F17C8
+set_global_assignment -name TOP_LEVEL_ENTITY hx_strip
+set_global_assignment -name VERILOG_FILE ../hx_strip.v
+set_instance_assignment -name VIRTUAL_PIN ON -to *

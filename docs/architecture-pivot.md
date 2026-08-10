@@ -254,9 +254,17 @@ and ran a full fit on the EP4CE15 (Quartus 25.1std). Result:
 | **stripped ROM-load base (+ mirror-64K decode) + 8-ch mixer** | **5,010 (33%)** | **MEASURED (stub-strip fit)** |
 | scene engine | ~1,000–1,500 | *estimate (unbuilt)* |
 | actor priority (OAM depth-sort + flicker rotation) | ~1,500–2,500 | *estimate* |
-| map strip builder + metatile fetch | ~1,500–2,500 | *estimate* |
+| map strip builder + metatile fetch | **721 core / ~1,500–2,500 full** | **core MEASURED** (`fpga/cores/strip`) |
 | FMV prep engine (NMI DMA staging) | ~1,000–2,000 | *estimate; shares infra w/ strip builder* |
 | **full RPG core** | **~10,010–13,510 (65–88%)** | **fits** |
+
+**Strip builder core measured (2026-08-06):** `fpga/cores/strip/hx_strip.v` — the hardware form of
+`runtime/hx421_metatile.c` (two-level metatile→def fetch, 1-deep metatile cache, address arithmetic;
+`mty*map_w` = the 2 DSP blocks; staging BRAM external = 0 M9K). Standalone fit on the EP4CE15:
+**721 LE (5%), 2 DSP, 0 M9K** — well under the estimate, since the fetch/expand datapath is small. The
+721 is the core datapath; a production block adds multi-layer state, the transposed-column path,
+torus-wrap modulo, reseed, and DMA-descriptor emission → nearer the low end of ~1,500–2,500. Compiles
+clean under Questa (0 errors). The biggest-uncertainty feature is now a measured, cheap datapath.
 
 The measured base came in **~840 LE below the earlier subtraction estimate (5,850)** — the fitter also
 removed dead glue the per-entity subtraction couldn't. Other measured facts from the probe: **all 24
