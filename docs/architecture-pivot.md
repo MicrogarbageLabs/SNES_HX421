@@ -173,6 +173,20 @@ made, but by the architecture moving underneath them. Any future "we chose X bec
 should be re-checked against measured numbers before it drives RTL — assumptions here have run 5x
 off in both directions.
 
+### Optional add-ons using the headroom (measured)
+The RPG core leaves ~34% LE and most of the DSP/M9K free, so two optional coprocessor services fit
+cheaply, both built + verified:
+
+- **Actor→map metatile query** (`fpga/cores/actorq`) — bulk per-actor map lookups (collision, terrain,
+  triggers) the SNES can't do (it never reads PSRAM). **433 LE, 1 M9K** (store shared with the actor
+  engine → marginal cost tiny). §"Actor ↔ layer metatile queries".
+- **DSP math coprocessor** (`fpga/cores/dsp`) — the DSP-1/CX4 pattern: the 65816 byte-writes a
+  function + operands to the cart mailbox, NOPs a fixed latency, reads the result bytes by index.
+  Starter set MUL (signed 16×16→32) / MAC+MACINIT (dot products) / DIV (iterative 32÷16), a `ready`
+  byte for robustness. **287 LE, 2 DSP, 0 M9K** — nearly free (2 of the ~88 spare multipliers), with
+  room for trig LUTs, wider MACs, vector transforms. Co-sim: 7 ops incl. edge cases (max-neg squared,
+  ÷0) match a C golden.
+
 ## RPG re-scope (2026-08-06): SNES runs the game, FPGA accelerates, ARM minimal
 
 A deliberate scope cut to ship an RPG. The premise above (STM32 runs game logic, FPGA is a toolbox)
