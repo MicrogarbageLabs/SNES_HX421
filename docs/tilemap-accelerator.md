@@ -104,6 +104,30 @@ DMA is not the constraint; **VRAM is**. Note Mode 1 (BG1/BG2 4bpp + BG3 2bpp) of
 better than four 2bpp layers — 15 colours on the layers carrying artwork usually beats a fourth
 3-colour parallax band. The accelerator does not care which mode is chosen.
 
+## RPG target: Mode 1, three independent-camera layers
+
+The RPG core runs the engine as a **3-layer Mode 1 driver**, one context per BG:
+
+- **BG1 + BG2 (4bpp)** share the same **1024-tile CHR set** (`MAP_BG12NBA = 0x22`, both CHR base
+  0x2000), but each has its **own tilemap pointer and its own camera** — so the two 4bpp planes
+  scroll independently (parallax, or one static while the other moves) off one tile set.
+- **BG3 (2bpp)** has its own tiles and camera. Usual job: ambience / water-transparency behind or
+  in front of the action. Second job: a **HUD** — the SNES uses an **H-IRQ mid-frame `BG3SC` swap**
+  to point BG3 at a static HUD tilemap for the status region and back to the scrolling map for the
+  rest of the frame. So BG3 needs **two tilemap targets** (scrolling ambience + static HUD); the
+  engine scrolls the first and leaves the second alone (a clamped/static layer, below).
+
+**Per-layer camera → auto strips, or clamp.** Each layer's camera is set independently; the engine
+derives the strips from the *delta* (the `hx_map_layer_goto` model: `dl/dt` vs the window, seams in
+the direction of travel, reseed past `MAP_MAX_COLS/ROWS`). A layer set to **clamp** holds its camera
+at a limit and emits nothing — the mode for static screens (a fixed room, a menu backdrop, the HUD
+sub-map). No special-case code: clamp is just `cam` pinned so `dl = dt = 0`.
+
+**Memory.** Three layers, each with a row-major *and* transposed column-major expanded map in PSRAM,
+plus their def sets — a lot of PSRAM, but trivial against ~16 MB (`map_rows`/`map_cols` are two base
+addresses per layer, §PSRAM layout). Only VRAM is tight (Mode 1: 2×4bpp + 1×2bpp CHR + 3 tilemaps),
+per §Parallax.
+
 ## CHR is RESIDENT, not streamed
 
 The accelerator moves **tilemap entries only**. Tile graphics live in VRAM for the duration of
@@ -154,3 +178,11 @@ at a scroll seam, months later.
 to powers of two so the tile-to-metatile decomposition is a shift and a mask. It is both the
 reference implementation and the spec: the fabric block can be diffed against it in simulation
 the same way the mixer will be.
+
+**Status.** The fetch/expand datapath exists as `fpga/cores/strip/hx_strip.v` — the hardware form of
+`mt_lookup` (two-level metatile→def fetch, 1-deep metatile cache, req/ack PSRAM read port, strip
+write port), measured at **721 LE / 2 DSP / 0 M9K** on the EP4CE15. Still to add for the RPG target:
+**per-layer context (×3)** time-multiplexed over that one datapath (mixer load-context style),
+**camera-delta → direction seams + clamp** (`hx_map_layer_goto`), reseed, the transposed-column path,
+and per-layer tilemap-dest tagging (incl. BG3's static HUD sub-map). Those are control/state around
+the measured datapath; the standalone-synth harness (`cores/strip/synth`) measures each increment.

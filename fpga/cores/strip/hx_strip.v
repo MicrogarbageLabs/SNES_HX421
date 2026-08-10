@@ -1,203 +1,212 @@
 // ============================================================
-//  hx_strip.v — map strip builder / metatile fetch (RTL skeleton)
+//  hx_strip.v — multi-layer map strip builder / metatile fetch (RTL skeleton)
 //
-//  Hardware form of runtime/hx421_metatile.c mt_lookup(): expand a strip of
-//  SNES BG tilemap entries from a metatile map in PSRAM, so per-frame DMA is an
-//  edge column/row (64-128 B) instead of the whole 2 KB tilemap. See
+//  Hardware form of runtime/hx421_metatile.c + hx_map_layer_goto(): a 3-layer
+//  Mode-1 tilemap accelerator. One fetch/expand datapath is time-multiplexed
+//  over per-layer context (mixer load-context style), so each BG has its own
+//  map pointer, camera and sliding window at modest LE cost. See
 //  docs/tilemap-accelerator.md.
 //
-//  Per output tile (tx,ty):
-//    mtx = tx>>shift; mty = ty>>shift            (shift = log2(mt_side), 1/2/3)
-//    map_index = mty*map_w + mtx                  (the one true multiply)
-//    mt  = PSRAM[map_base + map_index]            (metatile index, 16b)
-//    if (mt >= def_count) entry = oob_entry
-//    else entry = PSRAM[defs_base + (mt<<2*shift) + (sy<<shift) + sx]
-//    strip[strip_base + i] = entry                (16b SNES tilemap word)
+//  Per output tile (tx,ty), matching mt_lookup:
+//    mtx=tx>>shift; mty=ty>>shift
+//    mt  = PSRAM[map_base + mty*map_w + mtx]                 (metatile index)
+//    entry = (mt>=def_count) ? oob
+//          : PSRAM[defs_base + (mt<<2*shift)+(sy<<shift)+sx] (tilemap word)
 //
-//  A 1-deep metatile cache (last mtx,mty→mt) skips the map fetch while walking
-//  within a metatile (a column crosses a metatile boundary only every `side`
-//  tiles), so most tiles cost one PSRAM read, not two — the realistic datapath.
+//  Per layer_goto(li,nx,ny), matching hx_map_layer_goto:
+//    clamp nx,ny to the layer limits if clamp mode (static screen / HUD sub-map)
+//    want_l=(nx>>3)-16; want_t=(ny>>3)-2; dl=want_l-win_l; dt=want_t-win_t
+//    reseed if !seeded || |dl|>MAX_COLS || |dt|>MAX_ROWS, else emit |dl| columns
+//    (entering in the travel direction) + |dt| rows; update the window
 //
-//  This is a RESOURCE-REPRESENTATIVE skeleton for the LE/M9K tally: the control
-//  FSM, two-level fetch + cache, and address arithmetic are the real cost. Full
-//  co-sim against the C reference is a later step. Public domain (CC0).
+//  RESOURCE-REPRESENTATIVE skeleton for the LE tally (control + per-layer state
+//  + the measured fetch datapath). Not yet co-simulated against the C reference;
+//  the transposed-column path and DMA-descriptor emission are follow-ons. CC0.
 // ============================================================
 
 `default_nettype none
 
-module hx_strip (
+module hx_strip #(
+    parameter integer NL = 3,          // layers (Mode 1: BG1,BG2,BG3)
+    parameter integer MAX_COLS = 8,
+    parameter integer MAX_ROWS = 4
+) (
     input  wire        clk,
     input  wire        rst,
 
-    // config register file (write one field at a time)
     input  wire        cfg_we,
-    input  wire [3:0]  cfg_field,   // see localparams below
+    input  wire [1:0]  cfg_layer,
+    input  wire [4:0]  cfg_field,
     input  wire [31:0] cfg_data,
 
-    // start / status
-    input  wire        go,          // 1-cycle pulse: build the strip
+    input  wire        go,
+    input  wire [1:0]  go_layer,
+    input  wire signed [15:0] go_x,
+    input  wire signed [15:0] go_y,
     output reg         busy,
 
-    // PSRAM read port (single req/ack, 16-bit words) — same shape as the mixer
     output wire        rd_req,
     output wire [31:0] rd_addr,
     input  wire        rd_ack,
     input  wire [15:0] rd_data,
 
-    // strip staging write port (to external BRAM the SNES DMAs from)
     output reg         strip_we,
     output reg  [15:0] strip_addr,
     output reg  [15:0] strip_data
 );
+    localparam [4:0] F_MAP=0,F_COLS=1,F_DEFS=2,F_W=3,F_H=4,F_DEFCNT=5,
+                     F_FLAGS=6,F_STRIP=7,F_XMIN=8,F_XMAX=9,F_YMIN=10,F_YMAX=11;
+    localparam [3:0] S_IDLE=0,S_LOAD=1,S_CALC=2,S_SEGSET=3,S_SEGCHK=4,S_TSET=5,
+                     S_MREQ=6,S_MWAIT=7,S_DWAIT=8,S_TW=9,S_TNEXT=10,
+                     S_SEGNEXT=11,S_STORE=12;
+    reg [3:0] state;
 
-    // ---- config fields ----
-    localparam [3:0] F_MAP_BASE  = 4'd0;
-    localparam [3:0] F_DEFS_BASE = 4'd1;
-    localparam [3:0] F_MAP_W     = 4'd2;
-    localparam [3:0] F_MAP_H     = 4'd3;
-    localparam [3:0] F_DEF_COUNT = 4'd4;
-    localparam [3:0] F_FLAGS     = 4'd5;  // [2:0]=shift, [3]=dir(0 col/1 row), [4]=wrap, [31:16]=oob
-    localparam [3:0] F_FIXED     = 4'd6;  // column: tx ; row: ty
-    localparam [3:0] F_START     = 4'd7;  // column: ty0; row: tx0
-    localparam [3:0] F_COUNT     = 4'd8;
-    localparam [3:0] F_STRIP     = 4'd9;  // strip staging base (word addr)
+    // ---- per-layer context ----
+    reg [31:0] Lmap[0:NL-1], Lcols[0:NL-1], Ldefs[0:NL-1];
+    reg [15:0] Lw[0:NL-1], Lh[0:NL-1], Ldc[0:NL-1], Loob[0:NL-1], Lstr[0:NL-1];
+    reg [2:0]  Lsh[0:NL-1];
+    reg        Lwrap[0:NL-1], Lclmp[0:NL-1], Lseed[0:NL-1];
+    reg signed [15:0] Lwl[0:NL-1], Lwt[0:NL-1], Lcx[0:NL-1], Lcy[0:NL-1];
+    reg signed [15:0] Lxmn[0:NL-1], Lxmx[0:NL-1], Lymn[0:NL-1], Lymx[0:NL-1];
 
-    reg [31:0] map_base, defs_base;
-    reg [15:0] map_w, map_h, def_count;
-    reg [2:0]  shift;
-    reg        dir, wrap;
-    reg [15:0] oob_entry;
-    reg [15:0] fixed_c, start_c, count;
-    reg [15:0] strip_base;
+    integer j;
+    initial for (j=0;j<NL;j=j+1) begin Lseed[j]=1'b0; Lwl[j]=0; Lwt[j]=0; end
 
-    always @(posedge clk) begin
-        if (cfg_we) case (cfg_field)
-            F_MAP_BASE : map_base   <= cfg_data;
-            F_DEFS_BASE: defs_base  <= cfg_data;
-            F_MAP_W    : map_w      <= cfg_data[15:0];
-            F_MAP_H    : map_h      <= cfg_data[15:0];
-            F_DEF_COUNT: def_count  <= cfg_data[15:0];
-            F_FLAGS    : begin shift <= cfg_data[2:0]; dir <= cfg_data[3];
-                               wrap <= cfg_data[4];    oob_entry <= cfg_data[31:16]; end
-            F_FIXED    : fixed_c    <= cfg_data[15:0];
-            F_START    : start_c    <= cfg_data[15:0];
-            F_COUNT    : count      <= cfg_data[15:0];
-            F_STRIP    : strip_base <= cfg_data[15:0];
-            default: ;
-        endcase
-    end
+    always @(posedge clk) if (cfg_we) case (cfg_field)
+        F_MAP:Lmap[cfg_layer]<=cfg_data; F_COLS:Lcols[cfg_layer]<=cfg_data;
+        F_DEFS:Ldefs[cfg_layer]<=cfg_data; F_W:Lw[cfg_layer]<=cfg_data[15:0];
+        F_H:Lh[cfg_layer]<=cfg_data[15:0]; F_DEFCNT:Ldc[cfg_layer]<=cfg_data[15:0];
+        F_FLAGS:begin Lsh[cfg_layer]<=cfg_data[2:0]; Lwrap[cfg_layer]<=cfg_data[3];
+                      Lclmp[cfg_layer]<=cfg_data[4]; Loob[cfg_layer]<=cfg_data[31:16]; end
+        F_STRIP:Lstr[cfg_layer]<=cfg_data[15:0];
+        F_XMIN:Lxmn[cfg_layer]<=cfg_data[15:0]; F_XMAX:Lxmx[cfg_layer]<=cfg_data[15:0];
+        F_YMIN:Lymn[cfg_layer]<=cfg_data[15:0]; F_YMAX:Lymx[cfg_layer]<=cfg_data[15:0];
+        default:;
+    endcase
 
-    // ---- walk state ----
-    reg [15:0] i;              // output index 0..count-1
-    reg [15:0] tx, ty;        // current tile coords
-    reg [15:0] mtx, mty;      // metatile coords
-    reg [2:0]  sx, sy;        // sub-tile within metatile
-    reg [15:0] mt;            // current metatile index (from map fetch / cache)
+    // ---- working (loaded-context) registers ----
+    reg [1:0]  li;
+    reg [31:0] w_map, w_defs;
+    reg [15:0] w_w, w_h, w_dc, w_oob, w_str;
+    reg [2:0]  w_sh;
+    reg        w_wrap;
+    reg signed [15:0] w_wl, w_wt, want_l, want_t, dl, dt, nx, ny;
 
-    // 1-deep metatile cache
-    reg        cache_valid;
+    // strip sequencing
+    reg [15:0] seg, seg_n, out_ptr, tcnt, tlen;
+    reg        seg_is_row, do_reseed;
+
+    // inner fetch
+    reg signed [15:0] tx, ty;
+    reg [15:0] mt, entry;
+    reg        cache_v, fdef;
     reg [15:0] cache_mtx, cache_mty, cache_mt;
 
-    wire [15:0] submask = (16'd1 << shift) - 16'd1;
+    // combinational tile decode from (tx,ty)
+    wire [15:0] submask = (16'd1 << w_sh) - 16'd1;
+    wire signed [15:0] c_mtx = tx >>> w_sh;
+    wire signed [15:0] c_mty = ty >>> w_sh;
+    wire [2:0] c_sx = tx[2:0] & submask[2:0];
+    wire [2:0] c_sy = ty[2:0] & submask[2:0];
+    wire oob = (!w_wrap) && ( (c_mtx < 0) || (c_mty < 0)
+                           || (c_mtx >= $signed({1'b0,w_w}))
+                           || (c_mty >= $signed({1'b0,w_h})) );
+    wire [15:0] u_mtx = c_mtx[15:0];
+    wire [15:0] u_mty = c_mty[15:0];
+    wire [31:0] map_index = (u_mty * w_w) + {16'd0,u_mtx};
+    wire [3:0]  sh2 = {w_sh,1'b0};
+    wire [31:0] def_index = ({16'd0,mt} << sh2) + ({29'd0,c_sy} << w_sh) + {29'd0,c_sx};
 
-    // oob test (non-wrap): any coord outside the map
-    wire oob = (!wrap) && ( (mtx >= map_w) || (mty >= map_h) );
-
-    // map index = mty*map_w + mtx  (the one real multiply -> DSP)
-    wire [31:0] map_index = (mty * map_w) + {16'd0, mtx};
-    // def index = (mt << 2*shift) + (sy << shift) + sx
-    wire [3:0]  shift2    = {shift, 1'b0};              // 2*shift
-    wire [31:0] def_index = ({16'd0, mt} << shift2)
-                          + ({29'd0, sy} << shift)
-                          + {29'd0, sx};
-
-    localparam [3:0] S_IDLE=0, S_SETUP=1, S_META_REQ=2, S_META_WAIT=3,
-                     S_DEF_REQ=4, S_DEF_WAIT=5, S_WRITE=6, S_NEXT=7, S_DONE=8;
-    reg [3:0] state;
-    reg       fetching_def;    // 1 = current read is the def fetch, 0 = map fetch
-    reg [15:0] entry;
-    reg        use_oob;
-
-    assign rd_req  = (state == S_META_REQ) || (state == S_DEF_REQ);
-    assign rd_addr = fetching_def ? (defs_base + def_index)
-                                  : (map_base  + map_index);
+    assign rd_req  = (state==S_MWAIT) || (state==S_DWAIT);
+    assign rd_addr = (state==S_DWAIT) ? (w_defs + def_index) : (w_map + map_index);
 
     always @(posedge clk) begin
         if (rst) begin
-            state <= S_IDLE; busy <= 1'b0; strip_we <= 1'b0;
-            cache_valid <= 1'b0; i <= 16'd0;
+            state<=S_IDLE; busy<=1'b0; strip_we<=1'b0;
         end else begin
-            strip_we <= 1'b0;
+            strip_we<=1'b0;
             case (state)
-                S_IDLE: if (go) begin
-                    busy <= 1'b1;
-                    i    <= 16'd0;
-                    // seed coords from the walk direction
-                    tx   <= dir ? start_c : fixed_c;
-                    ty   <= dir ? fixed_c : start_c;
-                    cache_valid <= 1'b0;
-                    state <= S_SETUP;
+            S_IDLE: if (go) begin busy<=1'b1; li<=go_layer; nx<=go_x; ny<=go_y; state<=S_LOAD; end
+            S_LOAD: begin
+                w_map<=Lmap[li]; w_defs<=Ldefs[li]; w_w<=Lw[li]; w_h<=Lh[li];
+                w_dc<=Ldc[li]; w_oob<=Loob[li]; w_str<=Lstr[li]; w_sh<=Lsh[li];
+                w_wrap<=Lwrap[li]; w_wl<=Lwl[li]; w_wt<=Lwt[li];
+                if (Lclmp[li]) begin
+                    if (nx < Lxmn[li]) nx<=Lxmn[li]; else if (nx > Lxmx[li]) nx<=Lxmx[li];
+                    if (ny < Lymn[li]) ny<=Lymn[li]; else if (ny > Lymx[li]) ny<=Lymx[li];
                 end
-                S_SETUP: begin
-                    mtx <= tx >> shift;
-                    mty <= ty >> shift;
-                    sx  <= tx[2:0] & submask[2:0];
-                    sy  <= ty[2:0] & submask[2:0];
-                    use_oob <= 1'b0;
-                    state <= S_META_REQ;
+                cache_v<=1'b0; state<=S_CALC;
+            end
+            S_CALC: begin
+                want_l<=(nx>>>3)-16'sd16; want_t<=(ny>>>3)-16'sd2;
+                dl<=((nx>>>3)-16'sd16)-w_wl; dt<=((ny>>>3)-16'sd2)-w_wt;
+                state<=S_SEGSET;
+            end
+            S_SEGSET: begin
+                do_reseed <= (!Lseed[li]) || (dl>MAX_COLS) || (-dl>MAX_COLS)
+                                          || (dt>MAX_ROWS) || (-dt>MAX_ROWS);
+                seg<=16'd0; tcnt<=16'd0; seg_is_row<=1'b0; out_ptr<=w_str;
+                if ((!Lseed[li])||(dl>MAX_COLS)||(-dl>MAX_COLS)||(dt>MAX_ROWS)||(-dt>MAX_ROWS))
+                     seg_n<=16'd64;                    // reseed: full window width
+                else seg_n<=(dl[15]?-dl:dl);          // seams: |dl| columns
+                state<=S_SEGCHK;
+            end
+            S_SEGCHK: begin
+                if (seg_n==16'd0) begin
+                    // no columns this pass -> try the row pass, else done
+                    if (!seg_is_row && !do_reseed && (dt!=0)) begin
+                        seg<=16'd0; tcnt<=16'd0; seg_is_row<=1'b1;
+                        seg_n<=(dt[15]?-dt:dt);        // stays this state to re-check
+                    end else state<=S_STORE;
+                end else state<=S_TSET;
+            end
+            S_TSET: begin
+                if (!seg_is_row) begin
+                    tx <= do_reseed ? (want_l + seg)
+                                    : (dl>0 ? (w_wl+16'sd64+seg) : (w_wl-16'sd1-seg));
+                    ty <= want_t + tcnt;
+                    tlen<=16'd32;
+                end else begin
+                    ty <= (dt>0 ? (w_wt+16'sd32+seg) : (w_wt-16'sd1-seg));
+                    tx <= want_l + tcnt;
+                    tlen<=16'd64;
                 end
-                S_META_REQ: begin
-                    if (oob) begin
-                        entry   <= oob_entry;
-                        use_oob <= 1'b1;
-                        state   <= S_WRITE;
-                    end else if (cache_valid && cache_mtx == mtx && cache_mty == mty) begin
-                        mt    <= cache_mt;         // cache hit: skip the map read
-                        fetching_def <= 1'b1;
-                        state <= S_DEF_REQ;
-                    end else begin
-                        fetching_def <= 1'b0;      // map read
-                        state <= S_META_WAIT;
-                    end
-                end
-                S_META_WAIT: if (rd_ack) begin
-                    mt          <= rd_data;
-                    cache_valid <= 1'b1;
-                    cache_mtx   <= mtx;
-                    cache_mty   <= mty;
-                    cache_mt    <= rd_data;
-                    if (rd_data >= def_count) begin
-                        entry <= oob_entry; use_oob <= 1'b1; state <= S_WRITE;
-                    end else begin
-                        fetching_def <= 1'b1; state <= S_DEF_REQ;
-                    end
-                end
-                S_DEF_REQ: state <= S_DEF_WAIT;
-                S_DEF_WAIT: if (rd_ack) begin
-                    entry <= rd_data;
-                    state <= S_WRITE;
-                end
-                S_WRITE: begin
-                    strip_we   <= 1'b1;
-                    strip_addr <= strip_base + i;
-                    strip_data <= entry;
-                    state <= S_NEXT;
-                end
-                S_NEXT: begin
-                    if (i + 16'd1 >= count) begin
-                        state <= S_DONE;
-                    end else begin
-                        i  <= i + 16'd1;
-                        if (dir) tx <= tx + 16'd1; else ty <= ty + 16'd1;
-                        state <= S_SETUP;
-                    end
-                end
-                S_DONE: begin busy <= 1'b0; state <= S_IDLE; end
-                default: state <= S_IDLE;
+                state<=S_MREQ;
+            end
+            S_MREQ: begin
+                if (oob) begin entry<=w_oob; state<=S_TW; end
+                else if (cache_v && cache_mtx==u_mtx && cache_mty==u_mty) begin
+                    mt<=cache_mt; state<=S_DWAIT;
+                end else state<=S_MWAIT;
+            end
+            S_MWAIT: if (rd_ack) begin
+                mt<=rd_data; cache_v<=1'b1; cache_mtx<=u_mtx; cache_mty<=u_mty; cache_mt<=rd_data;
+                if (rd_data >= w_dc) begin entry<=w_oob; state<=S_TW; end
+                else state<=S_DWAIT;
+            end
+            S_DWAIT: if (rd_ack) begin entry<=rd_data; state<=S_TW; end
+            S_TW: begin
+                strip_we<=1'b1; strip_addr<=out_ptr; strip_data<=entry;
+                out_ptr<=out_ptr+16'd1; state<=S_TNEXT;
+            end
+            S_TNEXT: if (tcnt+16'd1>=tlen) begin tcnt<=16'd0; state<=S_SEGNEXT; end
+                     else begin tcnt<=tcnt+16'd1; state<=S_TSET; end
+            S_SEGNEXT: begin
+                if (seg+16'd1>=seg_n) begin
+                    if (!seg_is_row && !do_reseed && (dt!=0)) begin
+                        seg<=16'd0; tcnt<=16'd0; seg_is_row<=1'b1;
+                        seg_n<=(dt[15]?-dt:dt); state<=S_SEGCHK;
+                    end else state<=S_STORE;
+                end else begin seg<=seg+16'd1; state<=S_TSET; end
+            end
+            S_STORE: begin
+                Lwl[li]<=want_l; Lwt[li]<=want_t; Lcx[li]<=nx; Lcy[li]<=ny;
+                Lseed[li]<=1'b1; busy<=1'b0; state<=S_IDLE;
+            end
+            default: state<=S_IDLE;
             endcase
         end
     end
-
 endmodule
 
 `default_nettype wire
