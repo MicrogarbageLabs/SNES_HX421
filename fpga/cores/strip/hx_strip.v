@@ -46,7 +46,7 @@ module hx_strip #(
     output reg         busy,
 
     output wire        rd_req,
-    output wire [31:0] rd_addr,
+    output reg  [31:0] rd_addr,
     input  wire        rd_ack,
     input  wire [15:0] rd_data,
 
@@ -58,7 +58,7 @@ module hx_strip #(
                      F_FLAGS=6,F_STRIP=7,F_XMIN=8,F_XMAX=9,F_YMIN=10,F_YMAX=11;
     localparam [3:0] S_IDLE=0,S_LOAD=1,S_CALC=2,S_SEGSET=3,S_SEGCHK=4,S_TSET=5,
                      S_MREQ=6,S_MWAIT=7,S_DWAIT=8,S_TW=9,S_TNEXT=10,
-                     S_SEGNEXT=11,S_STORE=12;
+                     S_SEGNEXT=11,S_STORE=12,S_DEC=13,S_DADDR=14;
     reg [3:0] state;
 
     // ---- per-layer context ----
@@ -101,24 +101,28 @@ module hx_strip #(
     reg [15:0] mt, entry;
     reg        cache_v, fdef;
     reg [15:0] cache_mtx, cache_mty, cache_mt;
+    // registered tile decode (a pipeline stage: no shift+mult+add crosses one cycle)
+    reg [15:0] r_mtx, r_mty;
+    reg [2:0]  r_sx, r_sy;
+    reg        r_oob;
 
-    // combinational tile decode from (tx,ty)
+    // combinational decode from (tx,ty) — latched into r_* in S_DEC
     wire [15:0] submask = (16'd1 << w_sh) - 16'd1;
     wire signed [15:0] c_mtx = tx >>> w_sh;
     wire signed [15:0] c_mty = ty >>> w_sh;
     wire [2:0] c_sx = tx[2:0] & submask[2:0];
     wire [2:0] c_sy = ty[2:0] & submask[2:0];
-    wire oob = (!w_wrap) && ( (c_mtx < 0) || (c_mty < 0)
-                           || (c_mtx >= $signed({1'b0,w_w}))
-                           || (c_mty >= $signed({1'b0,w_h})) );
+    wire c_oob = (!w_wrap) && ( (c_mtx < 0) || (c_mty < 0)
+                            || (c_mtx >= $signed({1'b0,w_w}))
+                            || (c_mty >= $signed({1'b0,w_h})) );
     wire [15:0] u_mtx = c_mtx[15:0];
     wire [15:0] u_mty = c_mty[15:0];
-    wire [31:0] map_index = (u_mty * w_w) + {16'd0,u_mtx};
+    // address ops now run reg(r_*) -> rd_addr(reg), so each is one op per cycle
+    wire [31:0] map_index = (r_mty * w_w) + {16'd0,r_mtx};
     wire [3:0]  sh2 = {w_sh,1'b0};
-    wire [31:0] def_index = ({16'd0,mt} << sh2) + ({29'd0,c_sy} << w_sh) + {29'd0,c_sx};
+    wire [31:0] def_index = ({16'd0,mt} << sh2) + ({29'd0,r_sy} << w_sh) + {29'd0,r_sx};
 
     assign rd_req  = (state==S_MWAIT) || (state==S_DWAIT);
-    assign rd_addr = (state==S_DWAIT) ? (w_defs + def_index) : (w_map + map_index);
 
     always @(posedge clk) begin
         if (rst) begin
@@ -171,19 +175,29 @@ module hx_strip #(
                     tx <= want_l + tcnt;
                     tlen<=16'd64;
                 end
+                state<=S_DEC;
+            end
+            // pipeline stage: latch the tile decode (shift) into registers
+            S_DEC: begin
+                r_mtx<=u_mtx; r_mty<=u_mty; r_sx<=c_sx; r_sy<=c_sy; r_oob<=c_oob;
                 state<=S_MREQ;
             end
             S_MREQ: begin
-                if (oob) begin entry<=w_oob; state<=S_TW; end
-                else if (cache_v && cache_mtx==u_mtx && cache_mty==u_mty) begin
-                    mt<=cache_mt; state<=S_DWAIT;
-                end else state<=S_MWAIT;
+                if (r_oob) begin entry<=w_oob; state<=S_TW; end
+                else if (cache_v && cache_mtx==r_mtx && cache_mty==r_mty) begin
+                    mt<=cache_mt; state<=S_DADDR;      // cache hit: skip the map read
+                end else begin
+                    rd_addr <= w_map + map_index;      // register the map read address
+                    state<=S_MWAIT;
+                end
             end
             S_MWAIT: if (rd_ack) begin
-                mt<=rd_data; cache_v<=1'b1; cache_mtx<=u_mtx; cache_mty<=u_mty; cache_mt<=rd_data;
+                mt<=rd_data; cache_v<=1'b1; cache_mtx<=r_mtx; cache_mty<=r_mty; cache_mt<=rd_data;
                 if (rd_data >= w_dc) begin entry<=w_oob; state<=S_TW; end
-                else state<=S_DWAIT;
+                else state<=S_DADDR;
             end
+            // register the def read address (mt/r_sx/r_sy -> rd_addr, one cycle)
+            S_DADDR: begin rd_addr <= w_defs + def_index; state<=S_DWAIT; end
             S_DWAIT: if (rd_ack) begin entry<=rd_data; state<=S_TW; end
             S_TW: begin
                 strip_we<=1'b1; strip_addr<=out_ptr; strip_data<=entry;

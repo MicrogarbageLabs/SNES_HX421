@@ -15,3 +15,4 @@ set_global_assignment -name VERILOG_FILE ../../mixer/hx_scale.v
 set_global_assignment -name VERILOG_FILE ../../mixer/hx_finalize.v
 set_global_assignment -name VERILOG_FILE ../../mixer/hx_psram_arb.v
 set_instance_assignment -name VIRTUAL_PIN ON -to *
+set_global_assignment -name SDC_FILE hx_rpg.sdc

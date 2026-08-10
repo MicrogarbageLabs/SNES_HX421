@@ -279,8 +279,19 @@ Combined fit on the EP4CE15:
 strip/FMV renderer-port sharing avoided a third arbiter port; the staging mux is trivial. This
 integrated 8,240 LE does **not** include the SNES-bus/ROM-load decode from the base (~1,960 LE), so
 the **full cart core ≈ 10,200 LE ≈ 66%**, with ~34% headroom. M9K 30% and DSP 21% both have ample
-room. (Timing wasn't constrained in this resource harness — no SDC; the mixer timing-closes at 96 MHz
-standalone.) **The RPG core fits the EP4CE15 comfortably, on fully measured numbers.**
+room. **The RPG core fits the EP4CE15 comfortably, on fully measured numbers.**
+
+**Timing (2026-08-06, constrained at 96 MHz).** Combined-domain Fmax started at **64.9 MHz** — the
+limiter was the strip engine computing `mty*map_w + mtx` combinationally straight into the PSRAM
+address and through the arbiter (a shift+multiply+add+mux in one cycle). Pipelining that (register the
+tile decode, then the multiply, then `rd_addr` — the mixer's "no compute crosses a cycle" discipline)
+lifted it to **79.3 MHz** (+43 LE); the next limiter is the actor engine's histogram-BRAM→`oidx`
+arithmetic, the same cheap fix if wanted. **But the per-frame engines do not need 96 MHz** — only the
+mixer does (continuous audio). Strip/actor/scene/FMV do per-frame work (~12k cycles/frame total ≈ **2%
+utilization even at 40 MHz**; a frame is ~1.6M cycles at 96 MHz), so the real design is **two clock
+domains** — mixer at 96 MHz, the per-frame engines in a slower domain with CDC on the shared PSRAM
+arbiter — and 79 MHz is already ample for them. Single-domain 96 MHz on the per-frame engines is an
+artificial constraint; no further pipelining is required for correctness or throughput.
 
 **Strip builder measured (2026-08-06):** `fpga/cores/strip/hx_strip.v` — the hardware form of
 `runtime/hx421_metatile.c` + `hx_map_layer_goto`. The core fetch datapath (two-level metatile→def
