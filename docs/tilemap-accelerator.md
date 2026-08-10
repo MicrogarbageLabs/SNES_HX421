@@ -155,9 +155,16 @@ on X" — goes through it.
   accelerates the cheap tile-grid lookup that would otherwise sit on the 65816, and it exists because
   the 65816 *cannot* do the PSRAM lookup itself.
 
-Status: designed, not yet in RTL. It is a request-port + result-buffer extension of
-`fpga/cores/strip/hx_strip.v`; open semantics to pin before building — what it returns (raw metatile
-index / full tilemap entry / a derived terrain attribute), point vs rect, and queries/frame budget.
+Concretely, this is a **bulk per-actor op**: the 65816 dispatches (which actors, which layer), the
+engine iterates the actor list, fetches the metatile index under each, and writes a results BRAM the
+65816 reads. Skeleton built + measured: `fpga/cores/actorq/hx_actorq.v` — per actor, query tile =
+`(world − cam) >> 3`, `result = PSRAM[map_base + mty*map_w + mtx]` (one read; the metatile **index**,
+which map-aware logic maps to a terrain type). **433 LE (3%), 1 M9K, 2 DSP standalone** — and the
+1 M9K is the actor position store, **shared with the actor engine** in the real build, so the marginal
+cost is the fetch loop + a small results BRAM (~256 B point / ~1 KB for a 4-corner footprint). Point
+query in the skeleton; a footprint is the same loop over the box's corners. Address pipelined for
+timing like `hx_strip`. Returns the metatile index (not the expanded tile). Fits the BRAM window
+cheaply; the 65816 keeps dispatch + reaction.
 
 ## Two priorities: sprite-vs-sprite vs sprite-vs-BG (the canopy/bridge cheat)
 
