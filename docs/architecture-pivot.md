@@ -241,28 +241,31 @@ staging, so a full 64K mirror is out; mirror a small stub and stream the rest to
 **Net LE/M9K:** simplified decode frees LEs; dropping the collider frees M9K for the metatile cache;
 a small boot stub keeps M9K for staging.
 
-### LE/M9K tally (2026-08-06) — fits, given a stripped base
-From the measured fit reports (`fpga/build/h2_base`, `fpga/cores/mixer`): `h2_base` = **9,091 LE (59%)**
-but that already bundles the mixer (`hx_mixer_dac` ~3,050 LE) **and** stock sd2snes features the RPG
-doesn't use — `bsx` 762, `cheat` 550, `ctx` 790, `rtc`+`srtc` 989, `msu` 148 (**~3,240 LE strippable**).
+### LE/M9K tally (2026-08-06) — base MEASURED, RPG core fits
+Full `h2_base` = **9,091 LE (59%)** but already bundles the mixer (`hx_mixer_dac` ~3,050) **and** stock
+sd2snes features the RPG doesn't use — bsx 762, cheat 550, ctx 790, rtc+srtc 989, msu 148.
 
-| component | ~LE | |
+**Stripped base measured (2026-08-06), not estimated.** A resource probe replaced those six cores with
+port-matched zero-output stubs (so Quartus drops them *and* their now-dead decode/mux glue in main.v)
+and ran a full fit on the EP4CE15 (Quartus 25.1std). Result:
+
+| component | LE | source |
 |---|---|---|
-| stripped ROM-load base (mirror-64K decode) + 8-ch mixer | ~5,850 (38%) | measured, minus strippable |
+| **stripped ROM-load base (+ mirror-64K decode) + 8-ch mixer** | **5,010 (33%)** | **MEASURED (stub-strip fit)** |
 | scene engine | ~1,000–1,500 | *estimate (unbuilt)* |
 | actor priority (OAM depth-sort + flicker rotation) | ~1,500–2,500 | *estimate* |
 | map strip builder + metatile fetch | ~1,500–2,500 | *estimate* |
 | FMV prep engine (NMI DMA staging) | ~1,000–2,000 | *estimate; shares infra w/ strip builder* |
-| **full RPG core** | **~10,850–14,350 (70–93%)** | **fits; tighter at top end** |
+| **full RPG core** | **~10,010–13,510 (65–88%)** | **fits** |
 
-If the top-end estimate is too close for comfort, the strip-builder ⇄ FMV-prep shared-staging-core
-fallback (above) reclaims most of the FMV-prep line, since the two never run simultaneously.
-
-M9K lands ~37/56 blocks (66%) with everything (mixer FIFOs 13, metatile cache 5, DMA staging 12) —
-not the bottleneck. DSP 24/112 (21%). **Pins are the tight resource at 144/166 (87%)**, but the three
-features are internal logic and add ~no I/O. Verdict: **fits the EP4CE15 provided the base is
-purpose-stripped** (drop BS-X/cheat/ctx/MSU/RTC) — which the mirror-64K/execute-from-WRAM base does
-anyway. Caveats: the three feature figures are estimates; a rough synth would tighten them.
+The measured base came in **~840 LE below the earlier subtraction estimate (5,850)** — the fitter also
+removed dead glue the per-entity subtraction couldn't. Other measured facts from the probe: **all 24
+DSP multipliers (21%) belong to the mixer** (cubic interp); base+mixer needs only **4 M9K** (feature
+staging/cache/FIFO buffers add on top per the BRAM budget — projected ~37/56 with everything, not the
+bottleneck); **pins stay the tight resource at 144/166 (87%)** but the features are internal logic and
+add ~no I/O. If the top-end feature estimate gets close, the strip-builder ⇄ FMV-prep shared-staging-
+core fallback (above) reclaims most of the FMV-prep line. Reproduce: stub the six cores + `quartus_fit`
+(the probe was a scratch build, not committed — the real stripped base is a later functional RTL step).
 
 ### Saves: mailbox to an SD file, no cart RAM (decided 2026-08-06)
 **No cart RAM at all** — not a PSRAM window, not BRAM. Working memory is the SNES's 128 KB WRAM,
