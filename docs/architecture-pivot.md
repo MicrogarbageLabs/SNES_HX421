@@ -253,10 +253,10 @@ and ran a full fit on the EP4CE15 (Quartus 25.1std). Result:
 |---|---|---|
 | **stripped ROM-load base (+ mirror-64K decode) + 8-ch mixer** | **5,010 (33%)** | **MEASURED (stub-strip fit)** |
 | scene engine | ~1,000–1,500 | *estimate (unbuilt)* |
-| actor priority (OAM depth-sort + flicker rotation) | ~1,500–2,500 | *estimate* |
+| actor priority (OAM depth-sort + flicker) | **1,176 (8%), 2 M9K** | **MEASURED** (`fpga/cores/actor`) |
 | map strip builder + metatile fetch (3-layer) | **2,060 (13%)** | **MEASURED** (`fpga/cores/strip`) |
 | FMV prep engine (NMI DMA staging) | ~1,000–2,000 | *estimate; shares infra w/ strip builder* |
-| **full RPG core** | **~10,570–13,070 (69–85%)** | **fits** |
+| **full RPG core** | **~10,250–11,750 (66–76%)** | **fits** |
 
 **Strip builder measured (2026-08-06):** `fpga/cores/strip/hx_strip.v` — the hardware form of
 `runtime/hx421_metatile.c` + `hx_map_layer_goto`. The core fetch datapath (two-level metatile→def
@@ -266,8 +266,17 @@ screens/HUD), and reseed — measures **2,060 LE (13%), 2 DSP, 0 M9K** on the EP
 midpoint of the earlier 1.5–2.5K estimate. The `mty*map_w` multiply is **shared across layers**
 (time-multiplexed) so it stays 2 DSP; per-layer context is in registers (moving it to BRAM trades
 ~400 LE for 1 M9K). Compiles clean under Questa. Follow-ons (small): transposed-column path select,
-DMA-descriptor emission, BG3 HUD dual-map tagging. Two of five core components (base + strip) are now
-measured — the biggest uncertainty is retired.
+DMA-descriptor emission, BG3 HUD dual-map tagging.
+
+**Actor priority measured (2026-08-06):** `fpga/cores/actor/hx_actor.v` — world→screen transform via
+the top-layer camera, an **O(N) Y-counting-sort** (histogram → prefix → scatter, not a comparison
+network), OAM low-table emission in depth order, and per-band flicker rotation by frame phase.
+Measured **1,176 LE (8%), 2 M9K, 0 DSP** (the 2 M9K is the 128×64b actor store). A cautionary
+measurement: the first cut sorted by every scanline (256-entry histogram + occupancy arrays), which
+synthesized to **6,389 LE** of muxes rather than BRAM — the fix was to depth-sort by **8-line Y-band**
+(~30 bands; visually fine for sprite draw order), a 5.4× LE cut. Follow-ons: exact per-scanline
+occupancy for flicker (vs per-band), OAM high-table packing. Three of five core components (base,
+strip, actor) are now measured.
 
 The measured base came in **~840 LE below the earlier subtraction estimate (5,850)** — the fitter also
 removed dead glue the per-entity subtraction couldn't. Other measured facts from the probe: **all 24

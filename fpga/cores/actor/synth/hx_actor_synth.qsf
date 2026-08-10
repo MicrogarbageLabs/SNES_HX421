@@ -1,0 +1,7 @@
+# Standalone resource-probe synthesis of the actor priority engine, on the real
+# part (EP4CE15F17C8). Measures LE/M9K/DSP against the measured 5,010-LE base.
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE15F17C8
+set_global_assignment -name TOP_LEVEL_ENTITY hx_actor
+set_global_assignment -name VERILOG_FILE ../hx_actor.v
+set_instance_assignment -name VIRTUAL_PIN ON -to *
