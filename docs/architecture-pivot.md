@@ -182,10 +182,11 @@ cheaply, both built + verified:
   engine → marginal cost tiny). §"Actor ↔ layer metatile queries".
 - **DSP math coprocessor** (`fpga/cores/dsp`) — the DSP-1/CX4 pattern: the 65816 byte-writes a
   function + operands to the cart mailbox, NOPs a fixed latency, reads the result bytes by index.
-  Starter set MUL (signed 16×16→32) / MAC+MACINIT (dot products) / DIV (iterative 32÷16), a `ready`
-  byte for robustness. **287 LE, 2 DSP, 0 M9K** — nearly free (2 of the ~88 spare multipliers), with
-  room for trig LUTs, wider MACs, vector transforms. Co-sim: 7 ops incl. edge cases (max-neg squared,
-  ÷0) match a C golden.
+  Functions: MUL (signed 16×16→32) / MAC+MACINIT (dot products) / DIV (iterative 32÷16) / **SIN, COS**
+  (257-entry quarter-wave Q1.15 table + quadrant folding, angle 0..1023 = full circle; `sintab.vh`),
+  plus a `ready` byte. **358 LE, 2 DSP, 1 M9K** (the sine ROM) — nearly free (2 of the ~88 spare
+  multipliers), room for atan2/sqrt/vector transforms. Co-sim: 14 ops incl. edge cases (max-neg
+  squared, ÷0, sin/cos at 0/45/90/180/270°) match a C golden.
 
 ## RPG re-scope (2026-08-06): SNES runs the game, FPGA accelerates, ARM minimal
 

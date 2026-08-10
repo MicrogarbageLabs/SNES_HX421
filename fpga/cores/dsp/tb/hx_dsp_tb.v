@@ -67,6 +67,13 @@ module hx_dsp_tb;
         run_op(8'd2, 32'd100000, 32'd7);                // DIV 100000/7
         run_op(8'd2, 32'd12345, 32'd0);                 // DIV by zero
         run_op(8'd0, -32'sd32768, -32'sd32768);         // MUL -32768*-32768
+        run_op(8'd4, 32'd0,   32'd0);                   // SIN 0deg
+        run_op(8'd5, 32'd0,   32'd0);                   // COS 0deg
+        run_op(8'd4, 32'd256, 32'd0);                   // SIN 90deg
+        run_op(8'd4, 32'd512, 32'd0);                   // SIN 180deg
+        run_op(8'd4, 32'd768, 32'd0);                   // SIN 270deg
+        run_op(8'd4, 32'd128, 32'd0);                   // SIN 45deg
+        run_op(8'd5, 32'd128, 32'd0);                   // COS 45deg
 
         if (errors==0) $display("COSIM PASS: DSP results match the golden model (%0d ops)", opn);
         else           $display("COSIM FAIL: %0d mismatches", errors);

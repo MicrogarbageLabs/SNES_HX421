@@ -3,3 +3,4 @@ set_global_assignment -name DEVICE EP4CE15F17C8
 set_global_assignment -name TOP_LEVEL_ENTITY hx_dsp
 set_global_assignment -name VERILOG_FILE ../hx_dsp.v
 set_instance_assignment -name VIRTUAL_PIN ON -to *
+set_global_assignment -name SEARCH_PATH ..
