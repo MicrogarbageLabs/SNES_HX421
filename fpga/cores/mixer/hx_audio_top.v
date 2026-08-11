@@ -51,7 +51,12 @@ module hx_audio_top #(
     output reg  signed [15:0] audio_l,
     output reg  signed [15:0] audio_r,
     output reg         audio_stb,          // pulses one clk when a new sample lands
-    output reg         underrun            // sticky: a tick was missed
+    output reg         underrun,           // sticky: a tick was missed
+
+    // addressed per-channel drain pointer passthrough (STM32 reads it via the
+    // base MCU/SPI bridge to pace SD refills against the mixer's real consumption)
+    input  wire [CHW-1:0] pos_sel,
+    output wire [23:0] pos_out
 );
     // sample tick divider
     reg [$clog2(TICK_DIV):0] tick_cnt;
@@ -68,7 +73,8 @@ module hx_audio_top #(
         .out_min(out_min), .out_max(out_max),
         .start(prime), .render(mix_render),
         .rd_req(rd_req), .rd_ch(rd_ch), .rd_addr(rd_addr), .rd_ack(rd_ack), .rd_data(rd_data),
-        .out_l(mix_l), .out_r(mix_r), .out_valid(mix_valid), .busy(mix_busy)
+        .out_l(mix_l), .out_r(mix_r), .out_valid(mix_valid), .busy(mix_busy),
+        .pos_sel(pos_sel), .pos_out(pos_out)
     );
 
     always @(posedge clk) begin

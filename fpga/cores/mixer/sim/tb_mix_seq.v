@@ -32,6 +32,8 @@ module tb_mix_seq;
     reg  signed [15:0] rd_data;
     wire signed [31:0] out_l, out_r;
     wire         out_valid, busy;
+    reg  [CHW-1:0] pos_sel;
+    wire [23:0]  pos_out;
 
     reg signed [15:0] src [0:N*STRIDE-1];
 
@@ -43,7 +45,8 @@ module tb_mix_seq;
         .out_min(out_min), .out_max(out_max),
         .start(start), .render(render),
         .rd_req(rd_req), .rd_ch(rd_ch), .rd_addr(rd_addr), .rd_ack(rd_ack), .rd_data(rd_data),
-        .out_l(out_l), .out_r(out_r), .out_valid(out_valid), .busy(busy)
+        .out_l(out_l), .out_r(out_r), .out_valid(out_valid), .busy(busy),
+        .pos_sel(pos_sel), .pos_out(pos_out)
     );
 
     always #5 clk = ~clk;
@@ -68,7 +71,7 @@ module tb_mix_seq;
         end
     end
 
-    integer fd, r, i, k, hr, sh, nn, nout, stride, fails, cyc, worst_cyc;
+    integer fd, r, i, k, hr, sh, nn, nout, stride, fails, cyc, worst_cyc, pos_fails, pc;
     integer ci, ccu, cac, cmu, clp, cll, sci, snsrc;
     reg [31:0] shi, slo, offh, minh, maxh;
     reg [15:0] cvol, cpl, cpr, sv;
@@ -86,7 +89,7 @@ module tb_mix_seq;
         fd = $fopen("mix_vectors.txt","r");
         if (fd==0) begin $display("FATAL: no mix_vectors.txt"); $finish; end
 
-        rst=1; cfg_we=0; start=0; render=0;
+        rst=1; cfg_we=0; start=0; render=0; pos_sel=0;
         @(posedge clk); #1; @(posedge clk); #1; rst=0;
 
         r = $fscanf(fd, "HDR %d %d %h %h %h %d %d %d\n", hr, sh, offh, minh, maxh, nn, nout, stride);
@@ -130,11 +133,22 @@ module tb_mix_seq;
             @(posedge clk); wait (busy==1'b0); #1;   // back to IDLE before next
         end
 
+        // addressed per-channel drain pointer: pos_out must equal the internal
+        // src_pos of the selected channel (guards the pos_sel/pos_out export).
+        pos_fails = 0;
+        for (pc=0; pc<N; pc=pc+1) begin
+            pos_sel = pc[CHW-1:0]; #1;
+            if (pos_out !== dut.src_pos[pc]) begin
+                $display("POSFAIL ch %0d: pos_out=%0d src_pos=%0d", pc, pos_out, dut.src_pos[pc]);
+                pos_fails = pos_fails + 1;
+            end
+        end
+
         // 96 MHz clock, 22.7 us sample period => 2177 cycles/frame available.
-        $display("hx_mixer_seq co-sim (latency=%0d): %0d frames, %0d mismatches, worst %0d cyc/frame (of 2177 @96MHz/44.1kHz)",
-                 LATENCY, nout, fails, worst_cyc);
-        if (fails==0) $display("RESULT: PASS - latency-tolerant render bit-exact to mixer_render");
-        else          $display("RESULT: FAIL");
+        $display("hx_mixer_seq co-sim (latency=%0d): %0d frames, %0d mismatches, worst %0d cyc/frame (of 2177 @96MHz/44.1kHz); drain-ptr export %0d ch %0d mismatches",
+                 LATENCY, nout, fails, worst_cyc, N, pos_fails);
+        if (fails==0 && pos_fails==0) $display("RESULT: PASS - latency-tolerant render bit-exact to mixer_render; per-channel drain pointer exported");
+        else                          $display("RESULT: FAIL");
         $finish;
     end
 endmodule

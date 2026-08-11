@@ -59,7 +59,13 @@ module hx_mixer_seq #(
     // 6b streaming: channel 0's read position (sample index into its ring) — the
     // DRAIN POINTER the STM32 polls to know how much of the ring the mixer has
     // consumed, so it can refill without over/under-run.
-    output wire [23:0] pos0
+    output wire [23:0] pos0,
+
+    // 8-voice streaming: ADDRESSED per-channel drain pointer. The STM32 sets
+    // pos_sel to a channel and reads pos_out = that channel's ring read position
+    // (sample index). pos0 is retained as the ch0 fast-path the base surfaces.
+    input  wire [CHW-1:0] pos_sel,
+    output wire [23:0] pos_out
 );
     localparam signed [15:0] Q15_ONE = 16'sd32767;
 
@@ -108,7 +114,8 @@ module hx_mixer_seq #(
     wire [CHW-1:0] cur = ci[CHW-1:0];
     assign rd_ch = cur;
     assign busy  = (state != S_IDLE);
-    assign pos0  = src_pos[0];        // drain pointer (channel 0)
+    assign pos0    = src_pos[0];        // drain pointer (channel 0, base fast-path)
+    assign pos_out = src_pos[pos_sel];  // addressed per-channel drain pointer
 
     // ---- flat WORKING registers for the channel being processed ----
     reg  [31:0] w_phase;

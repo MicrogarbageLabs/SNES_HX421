@@ -50,7 +50,12 @@ module hx_rpg_top (
     output wire signed [15:0] audio_l,
     output wire signed [15:0] audio_r,
     output wire        audio_stb,
-    output wire [2:0]  mix_rd_ch
+    output wire [2:0]  mix_rd_ch,
+
+    // addressed per-channel mixer drain pointer (STM32 reads it via the base
+    // MCU/SPI bridge to pace SD refills against real consumption)
+    input  wire [2:0]  m_pos_sel,
+    output wire [23:0] m_pos_out
 );
     // ---- inter-module nets (declared up front for default_nettype none) ----
     wire        s_busy, s_rd_req, s_rd_ack, s_strip_we;
@@ -124,7 +129,8 @@ module hx_rpg_top (
         .out_min(m_out_min), .out_max(m_out_max), .prime(m_prime), .run(m_run),
         .rd_req(mix_rd_req), .rd_ch(mix_rd_ch), .rd_addr(mix_rd_addr),
         .rd_ack(mix_rd_ack), .rd_data(mix_rd_data),
-        .audio_l(audio_l), .audio_r(audio_r), .audio_stb(audio_stb), .underrun(mix_underrun)
+        .audio_l(audio_l), .audio_r(audio_r), .audio_stb(audio_stb), .underrun(mix_underrun),
+        .pos_sel(m_pos_sel), .pos_out(m_pos_out)
     );
 
     hx_psram_arb #(.AW(32)) u_arb (
