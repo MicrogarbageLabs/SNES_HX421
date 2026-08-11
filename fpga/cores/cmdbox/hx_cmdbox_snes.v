@@ -39,7 +39,9 @@ module hx_cmdbox_snes #(
     output wire        hit,             // window is being read this cycle
     output wire [7:0]  rdata,
 
-    // host (STM32) side — wired to the MCU bridge in a later increment
+    // host (STM32) side — read over the MCU bridge (F9 <group> <index>) + ack
+    input  wire [7:0]  mcu_addr,        // MCU read index (= reg_read/index_read_buf)
+    output wire [7:0]  mcu_rdata,       // -> mcu_cmd mbox_mcu_rdata
     output wire        pending,         // a command is posted and unconsumed
     input  wire        host_ack         // STM32 pulses to consume (OR'd with SNES self-ack)
 );
@@ -50,16 +52,19 @@ module hx_cmdbox_snes #(
     wire we       = snes_wr_end & win;                     // any write in the window
     wire snes_ack = we & (snes_addr[7:0] == ACK_OFF);      // bring-up self-ack
 
-    wire [7:0] mb_rdata;
+    wire [7:0] mb_rdata, mb_rdata2;
     hx_cmdbox u_box (
         .clk(clk), .rst(rst),
         .w_we(we), .w_addr(snes_addr[7:0]), .w_data(snes_data),
-        .r_addr(snes_addr[7:0]), .r_data(mb_rdata),
+        .r_addr(snes_addr[7:0]), .r_data(mb_rdata),      // port 1: SNES loopback
+        .r_addr2(mcu_addr),      .r_data2(mb_rdata2),     // port 2: STM32 (MCU bridge)
         .pending(pending), .ack(snes_ack | host_ack)
     );
 
     assign hit   = ~snes_read & win;
-    assign rdata = (snes_addr[7:0] == PEND_OFF) ? {7'b0, pending} : mb_rdata;
+    // both read views expose pending at PEND_OFF, mailbox bytes elsewhere
+    assign rdata     = (snes_addr[7:0] == PEND_OFF) ? {7'b0, pending} : mb_rdata;
+    assign mcu_rdata = (mcu_addr       == PEND_OFF) ? {7'b0, pending} : mb_rdata2;
 endmodule
 
 `default_nettype wire

@@ -177,6 +177,14 @@ wire [7:0] reg_value;
 wire [7:0] reg_invmask;
 wire       reg_we;
 wire [7:0] reg_read;
+
+// HX-421 media mailbox MCU read-back: declared here (before the mcu_cmd instance
+// that consumes it); driven by u_cmdbox_snes further down. 0 when disabled.
+`ifdef HX421_MEDIA_MAILBOX
+wire [7:0] mbox_mcu_rdata;
+`else
+wire [7:0] mbox_mcu_rdata = 8'h00;
+`endif
 reg [7:0] SNES_PARDr = 8'b11111111;
 reg [7:0] SNES_PAWRr = 8'b11111111;
 reg [7:0] SNES_READr = 8'b11111111;
@@ -767,6 +775,7 @@ mcu_cmd snes_mcu_cmd(
   .snescmd_we_out(snescmd_we_mcu),
   .snescmd_data_out(snescmd_data_out_mcu),
   .snescmd_data_in(snescmd_data_in_mcu),
+  .mbox_mcu_rdata(mbox_mcu_rdata),
   .cheat_pgm_idx_out(cheat_pgm_idx),
   .cheat_pgm_data_out(cheat_pgm_data),
   .cheat_pgm_we_out(cheat_pgm_we)
@@ -968,12 +977,16 @@ wire [7:0] HX_SIG_DATA = (SNES_ADDR[1:0] == 2'd0) ? 8'h48   // 'H'
 wire       mbox_pending;
 wire       MBOX_HIT;
 wire [7:0] MBOX_RDATA;
+// STM32 acks by writing the mailbox register group (0x10) over the MCU bridge
+// (opcode FA -> reg_we + reg_group). No other unit consumes reg_we in this base.
+wire       mbox_host_ack = reg_we & (reg_group == 8'h10);
 hx_cmdbox_snes u_cmdbox_snes (
   .clk(CLK2), .rst(1'b0),
   .snes_addr(SNES_ADDR), .snes_data(SNES_DATA),
   .snes_wr_end(SNES_WR_end), .snes_read(SNES_READ), .snes_romsel(SNES_ROMSEL),
   .hit(MBOX_HIT), .rdata(MBOX_RDATA),
-  .pending(mbox_pending), .host_ack(1'b0)
+  .mcu_addr(reg_read), .mcu_rdata(mbox_mcu_rdata),   // STM32 read via F9 group 0x10
+  .pending(mbox_pending), .host_ack(mbox_host_ack)
 );
 `else
 wire       MBOX_HIT   = 1'b0;

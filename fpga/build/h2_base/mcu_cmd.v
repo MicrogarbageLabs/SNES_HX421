@@ -99,6 +99,10 @@ module mcu_cmd(
   // SNES sync/clk
   input snes_sysclk,
 
+  // HX-421 media command mailbox read-back (group 0x10 via F9); driven
+  // combinationally from main.v = mailbox[index_read_buf]. 0 when disabled.
+  input [7:0] mbox_mcu_rdata,
+
   // snes cmd interface
   input [7:0] snescmd_data_in,
   output reg [7:0] snescmd_data_out,
@@ -527,7 +531,10 @@ always @(posedge clk) begin
         end
         32'h4: begin
           //if (group_read_buf == 8'h01) MCU_DATA_IN_BUF <= trc_config_data_in;
-          //else
+          // HX-421 media command mailbox read (group 0x10): index_read_buf is the
+          // mailbox offset, mbox_mcu_rdata = mailbox[index] driven from main.v.
+          if (group_read_buf == 8'h10) MCU_DATA_IN_BUF <= mbox_mcu_rdata;
+          else
             MCU_DATA_IN_BUF <= 0;
         end
       endcase

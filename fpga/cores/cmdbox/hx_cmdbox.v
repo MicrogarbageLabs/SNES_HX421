@@ -34,9 +34,14 @@ module hx_cmdbox #(
     input  wire [7:0]  w_addr,
     input  wire [7:0]  w_data,
 
-    // STM32 READ side (indexed byte readback)
+    // READ port 1 (indexed byte readback)
     input  wire [7:0]  r_addr,
     output wire [7:0]  r_data,
+
+    // READ port 2 (independent async read — lets the SNES loopback and the STM32
+    // read the mailbox without contending on one address bus)
+    input  wire [7:0]  r_addr2,
+    output wire [7:0]  r_data2,
 
     // handshake
     output reg         pending,   // set when the SNES writes DOORBELL
@@ -61,8 +66,9 @@ module hx_cmdbox #(
         end
     end
 
-    // asynchronous indexed readback (small 256 B map -> distributed RAM)
-    assign r_data = mem[r_addr];
+    // asynchronous indexed readback (small 256 B map -> distributed RAM), two ports
+    assign r_data  = mem[r_addr];
+    assign r_data2 = mem[r_addr2];
 endmodule
 
 `default_nettype wire
