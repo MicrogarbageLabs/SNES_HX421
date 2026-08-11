@@ -69,6 +69,11 @@ module hx_audio_top #(
     hx_mixer_seq #(.N(N), .CHW(CHW)) u_mix (
         .clk(clk), .rst(rst),
         .cfg_we(cfg_we), .cfg_ch(cfg_ch), .cfg_field(cfg_field), .cfg_data(cfg_data),
+        // no live external mute at this level — per-channel mute is set through the
+        // mixer's cfg field 2 (muted flag). Leaving ch_mute unconnected floats it to
+        // X in sim (muting everything -> all-zero output) and is an undriven input on
+        // hardware, so tie it off explicitly.
+        .ch_mute({N{1'b0}}),
         .headroom_bits(headroom_bits), .out_shift(out_shift), .out_offset(out_offset),
         .out_min(out_min), .out_max(out_max),
         .start(prime), .render(mix_render),
