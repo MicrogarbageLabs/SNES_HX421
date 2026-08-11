@@ -57,6 +57,7 @@ typedef struct {
     int      open;
     uint32_t start_tick;   /* for the time-estimated read pointer */
     uint32_t ring_size;
+    uint32_t psram_base;   /* ring base in PSRAM (told to the mixer at enable) */
 } SlotBind;
 
 static struct {
@@ -86,6 +87,7 @@ static int fw_offload(void *ctx, int s, uint32_t psram_addr,
  *   0x12 FA-write: re-prime (any value) */
 #define MIXER_GROUP 0x11u
 #define PRIME_GROUP 0x12u
+#define BASE_GROUP  0x13u   /* per-channel PSRAM ring base (3 bytes: {ch,byte}) */
 
 /* Read the mixer's real per-channel drain pointer (sample index) and convert to
  * a byte offset within the ring, so the arbiter refills at the true drain rate. */
@@ -167,6 +169,12 @@ static void fw_mixer_ctl(void *ctx, int s, int enable, uint8_t gain, uint8_t pan
     uint16_t pan_r = (pan >= 128) ? 32767u : (uint16_t)((uint32_t)32767u * pan / 127u);
     uint32_t loop_frames = FW.b[s].ring_size / 4u;          /* stereo 16-bit frames */
 
+    /* tell the mixer where this channel's ring lives in PSRAM (3 bytes, 24-bit) */
+    uint32_t base = FW.b[s].psram_base;
+    fpga_write_config(BASE_GROUP, (uint8_t)(((unsigned)s << 2) | 0), (uint8_t)(base),       0);
+    fpga_write_config(BASE_GROUP, (uint8_t)(((unsigned)s << 2) | 1), (uint8_t)(base >> 8),  0);
+    fpga_write_config(BASE_GROUP, (uint8_t)(((unsigned)s << 2) | 2), (uint8_t)(base >> 16), 0);
+
     mixcfg_write((uint8_t)s, 0, 0x00000000u, 4);            /* step_lo = 0            */
     mixcfg_write((uint8_t)s, 1, 0x00000001u, 4);            /* step_hi = 1 -> 1.0     */
     mixcfg_write((uint8_t)s, 6, loop_frames, 3);            /* loop_len (24-bit)      */
@@ -224,9 +232,9 @@ int hx421_media_fw_init(void) {
     cfg.slot[0] = (Hx421MediaSlotCfg){ RING_FMV_BASE,  RING_FMV_SIZE, RING_FMV_SIZE/2 };
     cfg.slot[1] = (Hx421MediaSlotCfg){ RING_MUS0_BASE, RING_MUS_SIZE, RING_MUS_SIZE/2 };
     cfg.slot[2] = (Hx421MediaSlotCfg){ RING_MUS1_BASE, RING_MUS_SIZE, RING_MUS_SIZE/2 };
-    FW.b[0].ring_size = RING_FMV_SIZE;
-    FW.b[1].ring_size = RING_MUS_SIZE;
-    FW.b[2].ring_size = RING_MUS_SIZE;
+    FW.b[0].ring_size = RING_FMV_SIZE;   FW.b[0].psram_base = RING_FMV_BASE;
+    FW.b[1].ring_size = RING_MUS_SIZE;   FW.b[1].psram_base = RING_MUS0_BASE;
+    FW.b[2].ring_size = RING_MUS_SIZE;   FW.b[2].psram_base = RING_MUS1_BASE;
 
     hx421_media_init(&FW.media, &plat, &cfg);
 

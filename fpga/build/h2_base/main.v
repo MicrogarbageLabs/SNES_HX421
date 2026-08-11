@@ -1300,7 +1300,24 @@ end
 `endif
 localparam [23:0] MIX_WAVE_BASE = `HX421_MIX_BASE;   // PSRAM byte addr of ch0 samples
 localparam [23:0] MIX_WAVE_BASE1 = `HX421_MIX_BASE1;
-wire [23:0] mix_base_sel = (mix_rom_rd_ch == 3'd1) ? MIX_WAVE_BASE1 : MIX_WAVE_BASE;
+// Per-channel PSRAM ring base — STM32-settable so streams can live anywhere in
+// PSRAM (register group 0x13, 3 bytes/ch: index = { ch[2:0], byte[1:0] }). Init
+// to the demo defaults so the stock mixer build (no STM32) is byte-identical.
+reg [23:0] mix_ch_base [0:7];
+integer mbi;
+initial for (mbi = 0; mbi < 8; mbi = mbi + 1)
+  mix_ch_base[mbi] = (mbi == 1) ? MIX_WAVE_BASE1 : MIX_WAVE_BASE;
+`ifdef HX421_MEDIA_MAILBOX
+always @(posedge CLK2) if (reg_we && reg_group == 8'h13) begin
+  case (reg_index[1:0])
+    2'd0: mix_ch_base[reg_index[4:2]][7:0]   <= reg_value;
+    2'd1: mix_ch_base[reg_index[4:2]][15:8]  <= reg_value;
+    2'd2: mix_ch_base[reg_index[4:2]][23:16] <= reg_value;
+    default: ;
+  endcase
+end
+`endif
+wire [23:0] mix_base_sel = mix_ch_base[mix_rom_rd_ch];
 reg        MIX_RD_PENDr  = 1'b0;
 reg [15:0] MIX_DINr      = 16'd0;
 reg [23:0] MIX_ROM_ADDRr = 24'd0;
