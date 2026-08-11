@@ -40,6 +40,12 @@ echo "=== apply the firmware-tree patch (SRC list + cli 'run' trigger + linker c
 # already applied. The .h files were copied above, so cli.c's #include resolves.
 sub=$(cd "$src/.." && pwd)
 patch_file="$here/sd2snes-devmode.patch"
+# Start from a pristine tracked src/ so this is robust to a prior media (or
+# partial) build: the dev-mode and media integrations touch overlapping files
+# (Makefile/smc/fpga/main) AND dev-mode alone touches stm32f401.ld's linker
+# carve, so a leftover media/other tree would make the patch fail to apply.
+# checkout only affects tracked files — the untracked copied sources stay.
+git -C "$sub" checkout -- src 2>/dev/null || true
 if git -C "$sub" apply --check "$patch_file" 2>/dev/null; then
   git -C "$sub" apply "$patch_file"
   echo "  applied sd2snes-devmode.patch"

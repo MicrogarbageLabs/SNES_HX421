@@ -1,0 +1,88 @@
+diff --git a/src/Makefile b/src/Makefile
+index 034cd96..28bf9d9 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -84,6 +84,11 @@ SRC += cfg.c cheat.c yaml.c savestate.c sgb.c hwinfo.c
+ 
+ SRC += usbdesc.c usbcore.c usbuser.c cdcuser.c usbinterface.c
+ 
++# HX-421 media firmware: SD -> PSRAM streaming for the FPGA mixer / FMV path.
++# The M4's whole RPG-scope job (docs/architecture-pivot.md); the SNES runs the
++# game in WRAM. audio_wav_read.c is the canonical WAV parser hx421_wav wraps.
++SRC += hx421_media.c hx421_media_fw.c hx421_stream.c hx421_wav.c audio_wav_read.c
++
+ # List Assembler source files here.
+ #     Make them always end in a capital .S.  Files ending in a lowercase .s
+ #     will not be considered source files but generated files (assembler
+diff --git a/src/fpga.h b/src/fpga.h
+index fb745e0..b0886b3 100644
+--- a/src/fpga.h
++++ b/src/fpga.h
+@@ -45,6 +45,9 @@ extern const uint8_t *fpga_config;
+ 
+ #define FPGA_CX4 ((const uint8_t*)"/sd2snes/fpga_cx4." FPGA_CONF_EXT)
+ #define FPGA_OBC1 ((const uint8_t*)"/sd2snes/fpga_obc1." FPGA_CONF_EXT)
++/* HX-421 coprocessor core — its own registered slot, so the bitstream lives at
++ * /sd2snes/fpga_hx421.bi3 instead of clobbering a stock core. */
++#define FPGA_HX421 ((const uint8_t*)"/sd2snes/fpga_hx421." FPGA_CONF_EXT)
+ #define FPGA_GSU ((const uint8_t*)"/sd2snes/fpga_gsu." FPGA_CONF_EXT)
+ #define FPGA_SA1 ((const uint8_t*)"/sd2snes/fpga_sa1." FPGA_CONF_EXT)
+ #define FPGA_SDD1 ((const uint8_t*)"/sd2snes/fpga_sdd1." FPGA_CONF_EXT)
+diff --git a/src/main.c b/src/main.c
+index 7ccac27..79fc02a 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -24,6 +24,7 @@
+ #include "crc.h"
+ #include "smc.h"
+ #include "msu1.h"
++#include "hx421_media_fw.h"   /* HX-421 media core: SD->PSRAM streaming loop */
+ #include "rtc.h"
+ #include "sysinfo.h"
+ #include "cfg.h"
+@@ -475,6 +476,16 @@ int main(void) {
+       continue;
+     }
+ 
++    /* HX-421 media core: the SNES runs the game in WRAM and mailboxes the FPGA;
++     * the M4's only job is streaming audio/FMV SD->PSRAM for the mixer. Owns the
++     * run loop like MSU-1, gated on the HX-421 audio core being loaded. */
++    if(romprops.has_hx421) {
++      hx421_media_fw_init();
++      while(!hx421_media_fw_loop());
++      prepare_reset();
++      continue;
++    }
++
+     cmd=0;
+     int loop_ticks = getticks();
+     uint8_t usb_cmd = 0;
+diff --git a/src/smc.c b/src/smc.c
+index 11398fe..1825965 100644
+--- a/src/smc.c
++++ b/src/smc.c
+@@ -199,6 +199,12 @@ void smc_id(snes_romprops_t* props, uint32_t file_offset) {
+         props->has_obc1 = 1;
+         props->fpga_conf = FPGA_OBC1;
+       }
++      /* HX-421 coprocessor (map 0x30, carttype 0xE4) — its own registered core,
++       * so ROMs no longer masquerade as OBC1 and fpga_obc1.bi3 stays stock. */
++      else if (header->map == 0x30 && header->carttype == 0xe4) {
++        props->has_hx421 = 1;
++        props->fpga_conf = FPGA_HX421;
++      }
+       /* SuperFX LoROM */
+       else if (header->map == 0x20 && ((header->carttype >= 0x13 && header->carttype <= 0x15) ||
+           header->carttype == 0x1a)) {
+diff --git a/src/smc.h b/src/smc.h
+index 6b64edc..42fde17 100644
+--- a/src/smc.h
++++ b/src/smc.h
+@@ -83,6 +83,7 @@ typedef struct __attribute__ ((__packed__)) _snes_romprops {
+   uint8_t has_msu1;           /* MSU1 presence flag */
+   uint8_t has_cx4;            /* CX4 presence flag */
+   uint8_t has_obc1;           /* OBC1 presence flag */
++  uint8_t has_hx421;          /* HX-421 coprocessor presence flag */
+   uint8_t has_gsu;            /* GSU presence flag */
+   uint8_t has_sa1;            /* SA-1 presence flag */
+   uint8_t has_sdd1;           /* S-DD1 presence flag */
