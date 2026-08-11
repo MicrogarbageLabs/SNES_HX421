@@ -80,14 +80,23 @@ static int fw_offload(void *ctx, int s, uint32_t psram_addr,
     return (r == FR_OK && br == len) ? 0 : 1;
 }
 
-/* TODO: read the mixer's real per-channel drain pointer from an FPGA status
- * register once the mixer exposes it. Time-estimated for now so the arbiter
- * refills at the true drain rate. */
+/* Mixer control register groups (FPGA base, via the generic config SPI opcodes):
+ *   0x11 FA-write: cfg bytes,  index = { ch[2:0], field[2:0], bytesel[1:0] }
+ *   0x11 F9-read : drain ptr,  index = { ch[2:0], byte[1:0] } (24-bit sample pos)
+ *   0x12 FA-write: re-prime (any value) */
+#define MIXER_GROUP 0x11u
+#define PRIME_GROUP 0x12u
+
+/* Read the mixer's real per-channel drain pointer (sample index) and convert to
+ * a byte offset within the ring, so the arbiter refills at the true drain rate. */
 static uint32_t fw_read_ptr(void *ctx, int s) {
     (void)ctx;
     if (s < 0 || s >= HX421_STREAM_MAX || FW.b[s].ring_size == 0) return 0;
-    uint32_t elapsed = getticks() - FW.b[s].start_tick;    /* ms */
-    return (elapsed * BYTES_PER_MS) % FW.b[s].ring_size;
+    uint32_t pos = (uint32_t) fpga_read_config(MIXER_GROUP, (uint8_t)((s << 2) | 0))
+                 | ((uint32_t)fpga_read_config(MIXER_GROUP, (uint8_t)((s << 2) | 1)) << 8)
+                 | ((uint32_t)fpga_read_config(MIXER_GROUP, (uint8_t)((s << 2) | 2)) << 16);
+    uint32_t bytes = pos * 4u;                     /* stereo 16-bit frame = 4 B */
+    return bytes % FW.b[s].ring_size;
 }
 
 static int fw_asset_open(void *ctx, int s, uint16_t id,
@@ -132,12 +141,40 @@ static void fw_asset_close(void *ctx, int s, uint16_t id) {
     }
 }
 
-/* TODO: write the FPGA mixer channel registers (enable, gain, pan). The mixer
- * register map is the FPGA-side counterpart still being wired; no-op until then
- * so the firmware links and streams without asserting a register address we do
- * not yet own. Gain/pan/ducking become register writes here. */
+/* Write `nbytes` low-to-high bytes of a mixer cfg field via FA group 0x11;
+ * hx_mixer_cfg assembles them and commits on the field's last byte. */
+static void mixcfg_write(uint8_t ch, uint8_t field, uint32_t data, int nbytes) {
+    for (int b = 0; b < nbytes; b++)
+        fpga_write_config(MIXER_GROUP, (uint8_t)((ch << 5) | (field << 2) | b),
+                          (uint8_t)(data >> (b * 8)), 0);
+}
+
+/* Configure/enable a mixer channel. On enable, set the full streaming config
+ * (native-rate step, active+loop, loop_len = the ring in frames, gain, pan) and
+ * re-prime; on disable, clear the active flag. Pan is a linear balance law
+ * (matches the C reference's mixer_set_pan). Gain/pan are Q15. */
 static void fw_mixer_ctl(void *ctx, int s, int enable, uint8_t gain, uint8_t pan) {
-    (void)ctx; (void)s; (void)enable; (void)gain; (void)pan;
+    (void)ctx;
+    if (s < 0 || s >= HX421_STREAM_MAX) return;
+
+    if (!enable) {
+        mixcfg_write((uint8_t)s, 2, 0x00000000u, 1);        /* flags: inactive */
+        return;
+    }
+
+    uint16_t vol   = (uint16_t)(((uint32_t)gain * 32767u) / 255u);
+    uint16_t pan_l = (pan <= 128) ? 32767u : (uint16_t)((uint32_t)32767u * (255u - pan) / 127u);
+    uint16_t pan_r = (pan >= 128) ? 32767u : (uint16_t)((uint32_t)32767u * pan / 127u);
+    uint32_t loop_frames = FW.b[s].ring_size / 4u;          /* stereo 16-bit frames */
+
+    mixcfg_write((uint8_t)s, 0, 0x00000000u, 4);            /* step_lo = 0            */
+    mixcfg_write((uint8_t)s, 1, 0x00000001u, 4);            /* step_hi = 1 -> 1.0     */
+    mixcfg_write((uint8_t)s, 6, loop_frames, 3);            /* loop_len (24-bit)      */
+    mixcfg_write((uint8_t)s, 3, vol, 2);                    /* vol                    */
+    mixcfg_write((uint8_t)s, 4, pan_l, 2);                  /* pan_l                  */
+    mixcfg_write((uint8_t)s, 5, pan_r, 2);                  /* pan_r                  */
+    mixcfg_write((uint8_t)s, 2, 0x0000000Au, 1);            /* flags: active + loop   */
+    fpga_write_config(PRIME_GROUP, 0, 0, 0);               /* re-prime the channels  */
 }
 
 /* Poll the SNES->cart command mailbox (hx_cmdbox_snes, FPGA base). The 65816
