@@ -953,6 +953,33 @@ wire [7:0] HX_SIG_DATA = (SNES_ADDR[1:0] == 2'd0) ? 8'h48   // 'H'
                        :                            8'h32;  // '2'
 `endif
 
+// ============================================================
+//  HX-421 media command mailbox ($3F:F1xx) — the 65816 posts play/stop/gain
+//  commands into a 256 B window; the STM32 reads them over the MCU bridge and
+//  drives the SD->PSRAM stream arbiter (docs/architecture-pivot.md; firmware/
+//  media). The SNES-decode + mailbox logic lives in hx_cmdbox_snes (co-sim'd in
+//  fpga/cores/cmdbox/tb/run-cosim-snes.sh — main.v itself can't be simulated).
+//  Fully gated on HX421_MEDIA_MAILBOX: undefined -> MBOX_HIT is const 0 and the
+//  read-mux term below optimises away, so stock builds are byte-identical.
+//  Mirrors snescmd_buf exactly: CLK2, SNES_WR_end write strobe, SNES_ADDR/DATA.
+//  host_ack is tied off for now; the MCU-bridge read/ack path is a later step.
+// ============================================================
+`ifdef HX421_MEDIA_MAILBOX
+wire       mbox_pending;
+wire       MBOX_HIT;
+wire [7:0] MBOX_RDATA;
+hx_cmdbox_snes u_cmdbox_snes (
+  .clk(CLK2), .rst(1'b0),
+  .snes_addr(SNES_ADDR), .snes_data(SNES_DATA),
+  .snes_wr_end(SNES_WR_end), .snes_read(SNES_READ), .snes_romsel(SNES_ROMSEL),
+  .hit(MBOX_HIT), .rdata(MBOX_RDATA),
+  .pending(mbox_pending), .host_ack(1'b0)
+);
+`else
+wire       MBOX_HIT   = 1'b0;
+wire [7:0] MBOX_RDATA = 8'h00;
+`endif
+
 // ---- 65816 vector region ($00:FFE0-FFFF) served from FPGA registers (BRAM) ----
 // Instead of PSRAM. Lets the WRAM engine install its own NMI/IRQ handlers by
 // rewriting the vectors, and takes the boot path off the PSRAM bus (no mixer
@@ -998,6 +1025,7 @@ wire [7:0] VEC_DATA = 8'h00;
 
 assign SNES_DATA = (~SNES_READ & (VEC_HIT | VEC_RB_HIT)) ? VEC_DATA
                    :(~SNES_READ & HX_SIG_HIT) ? HX_SIG_DATA
+                   :(~SNES_READ & MBOX_HIT) ? MBOX_RDATA          // HX-421 media mailbox ($3F:F1xx)
                    :(r213f_enable & ~SNES_PARD) ? (r213f_forceread ? 8'bZ : r213fr)
                    :(r2100_enable & ~SNES_PAWR & r2100_forcewrite) ? r2100r
                    :(((~SNES_READ & ((~SNES_SNOOPPAWR_DATA_OE & ~SNES_SNOOPPARD_DATA_OE) | ~SNES_ROMSEL_EARLY)))

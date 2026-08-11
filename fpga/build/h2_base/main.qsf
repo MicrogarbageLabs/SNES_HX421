@@ -530,6 +530,9 @@ set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_cubic.v
 set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_lerp.v
 set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_scale.v
 set_global_assignment -name VERILOG_FILE ../../cores/mixer/hx_finalize.v
+# HX-421 media command mailbox (gated on HX421_MEDIA_MAILBOX in main.v)
+set_global_assignment -name VERILOG_FILE ../../cores/cmdbox/hx_cmdbox.v
+set_global_assignment -name VERILOG_FILE ../../cores/cmdbox/hx_cmdbox_snes.v
 set_global_assignment -name VERILOG_FILE clk_test.v
 set_global_assignment -name VERILOG_FILE cheat.v
 set_global_assignment -name VERILOG_FILE bsx.v
