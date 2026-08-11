@@ -61,6 +61,11 @@ TESTS := \
 
 TEST_BIN := $(patsubst %,$(BUILD)/%$(EXE),$(TESTS))
 
+# The FPGA command-mailbox test lives in ../tools (it drives engine/hx421_cmd.c,
+# the SNES<->FPGA audio mailbox) rather than tests/, so it needs its own rule
+# below. Fold it into the default build + `make test` run.
+TEST_BIN += $(BUILD)/hx421_cmd_test$(EXE)
+
 INCLUDE_DIR := ../include
 RUNTIME_DIR := ../runtime
 TOOLS_DIR   := ../tools
@@ -77,6 +82,17 @@ $(BUILD)/%.o: %.c
 $(BUILD)/test_%$(EXE): tests/test_%.c $(ENGINE_OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $< $(ENGINE_OBJ) -o $@ $(LDFLAGS)
+
+# hx421_cmd: the SNES<->FPGA audio command mailbox. Its own TU (sits beside
+# service.c), linked into its test against the whole engine. The test writes a
+# procedural tone, so it needs -lm like the demo player.
+$(BUILD)/hx421_cmd.o: hx421_cmd.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/hx421_cmd_test$(EXE): $(TOOLS_DIR)/hx421_cmd_test.c $(BUILD)/hx421_cmd.o $(ENGINE_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $< $(BUILD)/hx421_cmd.o $(ENGINE_OBJ) -o $@ $(LDFLAGS) -lm
 
 # build + run every suite; non-zero exit if any suite fails
 test: $(TEST_BIN)

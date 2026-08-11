@@ -31,6 +31,9 @@ obj/
 *.dll
 *.log
 
+# hx421_cmd_test scratch tone (written+removed by the test; strays if interrupted)
+cmd_sfx.wav
+
 # Encoder scratch: fmv_encode writes a preview image beside the CWD, and
 # clips/containers are assets, never sources.
 *.ppm
