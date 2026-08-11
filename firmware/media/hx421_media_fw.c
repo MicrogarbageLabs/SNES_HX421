@@ -140,13 +140,32 @@ static void fw_mixer_ctl(void *ctx, int s, int enable, uint8_t gain, uint8_t pan
     (void)ctx; (void)s; (void)enable; (void)gain; (void)pan;
 }
 
-/* TODO: read the SNES->cart 256 B command mailbox + doorbell (the writable BRAM
- * mailbox from docs/architecture-pivot.md) and decode one Hx421MediaCmd. Until
- * the FPGA exposes it, report "no command" — the bring-up default started in
- * init keeps a stream playing so the path is exercisable on hardware. */
+/* Poll the SNES->cart command mailbox (hx_cmdbox_snes, FPGA base). The 65816
+ * writes a command block into the $3F:F1xx window and rings the doorbell; we read
+ * it here over the MCU bridge via the generic config-register opcodes: register
+ * group MBOX_GROUP, index = mailbox offset. Index 0xFD returns the pending flag;
+ * a write to the group acks (clears pending). Mailbox byte layout matches
+ * Hx421MediaCmd. Returns 1 and fills *out if a command was pending. */
+#define MBOX_GROUP    0x10u
+#define MBOX_PEND_IDX 0xFDu
+static uint8_t mbox_rd(uint8_t idx) { return fpga_read_config(MBOX_GROUP, idx); }
+
 static int fw_cmd_poll(void *ctx, Hx421MediaCmd *out) {
-    (void)ctx; (void)out;
-    return 0;
+    (void)ctx;
+    if (!(mbox_rd(MBOX_PEND_IDX) & 1u)) return 0;      /* nothing posted */
+
+    out->op    = mbox_rd(0);
+    out->slot  = mbox_rd(1);
+    out->asset = (uint16_t)(mbox_rd(2) | (mbox_rd(3) << 8));
+    out->flags = mbox_rd(4);
+    out->prio  = mbox_rd(5);
+    out->gain  = mbox_rd(6);
+    out->pan   = mbox_rd(7);
+    out->arg   = (uint32_t)mbox_rd(8)        | ((uint32_t)mbox_rd(9)  << 8)
+               | ((uint32_t)mbox_rd(10) << 16) | ((uint32_t)mbox_rd(11) << 24);
+
+    fpga_write_config(MBOX_GROUP, 0, 0, 0);            /* ack -> clears pending */
+    return 1;
 }
 
 /* ---- entry points ---- */
