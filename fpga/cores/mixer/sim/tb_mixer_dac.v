@@ -36,6 +36,9 @@ module tb_mixer_dac;
     .rom_rd_req(rom_rd_req), .rom_rd_addr(rom_rd_addr),
     .rom_rd_ack(rom_rd_ack), .rom_rd_data(rom_rd_data),
     .drain_pos(drain_pos),
+    // media ports off -> stock demo path (byte-identical)
+    .ext_cfg_en(1'b0), .ext_cfg_we(1'b0), .ext_cfg_ch(3'd0), .ext_cfg_field(3'd0),
+    .ext_cfg_data(32'd0), .ext_prime(1'b0), .pos_sel(3'd0), .pos_out(),
     .dbg_tick(dbg_tick), .dbg_mix(dbg_mix), .dbg_sdout(dbg_sdout), .dbg_status(dbg_status)
   );
 

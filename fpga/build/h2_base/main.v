@@ -178,12 +178,37 @@ wire [7:0] reg_invmask;
 wire       reg_we;
 wire [7:0] reg_read;
 
-// HX-421 media mailbox MCU read-back: declared here (before the mcu_cmd instance
-// that consumes it); driven by u_cmdbox_snes further down. 0 when disabled.
-`ifdef HX421_MEDIA_MAILBOX
-wire [7:0] mbox_mcu_rdata;
+// HX-421 media wires declared here (before the mcu_cmd / mixer instances that
+// consume them); driven further down. Tied to 0 / demo when disabled.
+//   group 0x10 = command mailbox (read via F9, ack via FA)
+//   group 0x11 = mixer cfg bytes (FA) + per-channel drain-pointer read (F9)
+//   group 0x12 = mixer re-prime (FA write, any value)
+`ifdef HX421_AUDIO_MIXER
+wire [23:0] mix_pos_out;         // driven by the mixer (snes_dac)
 `else
-wire [7:0] mbox_mcu_rdata = 8'h00;
+wire [23:0] mix_pos_out = 24'd0; // no mixer in this build
+`endif
+`ifdef HX421_MEDIA_MAILBOX
+wire [7:0]  mbox_mcu_rdata;      // mailbox read-back (group 0x10)
+wire        mixcfg_we;           // hx_mixer_cfg -> mixer ext cfg strobe
+wire [2:0]  mixcfg_ch, mixcfg_field;
+wire [31:0] mixcfg_data;
+wire        mix_ext_prime = reg_we & (reg_group == 8'h12);
+wire [2:0]  mixpos_sel    = reg_read[4:2];
+wire        mix_ext_cfg_en = 1'b1;
+// mixer drain-pointer read-back (group 0x11): index = { ch[2:0], byte[1:0] }
+wire [7:0]  mixpos_mcu_rdata = (reg_read[1:0] == 2'd0) ? mix_pos_out[7:0]
+                             : (reg_read[1:0] == 2'd1) ? mix_pos_out[15:8]
+                             :                            mix_pos_out[23:16];
+`else
+wire [7:0]  mbox_mcu_rdata   = 8'h00;
+wire [7:0]  mixpos_mcu_rdata = 8'h00;
+wire        mixcfg_we    = 1'b0;
+wire [2:0]  mixcfg_ch    = 3'd0, mixcfg_field = 3'd0;
+wire [31:0] mixcfg_data  = 32'd0;
+wire        mix_ext_prime = 1'b0;
+wire [2:0]  mixpos_sel   = 3'd0;
+wire        mix_ext_cfg_en = 1'b0;
 `endif
 reg [7:0] SNES_PARDr = 8'b11111111;
 reg [7:0] SNES_PAWRr = 8'b11111111;
@@ -495,12 +520,29 @@ hx_mixer_dac #(.LOOP_LEN(`HX421_LOOP_LEN), .SECOND_CH(`HX421_SECOND_CH), .STEREO
   .rom_rd_ack(mix_rom_rd_ack),
   .rom_rd_data(mix_rom_rd_data),
   .drain_pos(mix_drain_pos),
+  // media: STM32 config bus (from hx_mixer_cfg) + per-channel drain pointer.
+  // mix_ext_cfg_en=0 in non-media builds -> the boot demo, byte-identical.
+  .ext_cfg_en(mix_ext_cfg_en),
+  .ext_cfg_we(mixcfg_we), .ext_cfg_ch(mixcfg_ch), .ext_cfg_field(mixcfg_field),
+  .ext_cfg_data(mixcfg_data), .ext_prime(mix_ext_prime),
+  .pos_sel(mixpos_sel), .pos_out(mix_pos_out),
   .dbg_tick(hx_dbg_tick),
   .dbg_mix(hx_dbg_2),
   .dbg_sdout(hx_dbg_sdout),
   .dbg_status(hx_dbg_status)
 );
 assign DAC_STATUS = 1'b0;
+
+`ifdef HX421_MEDIA_MAILBOX
+// mixer control: the STM32 writes cfg bytes to register group 0x11 (assembled by
+// hx_mixer_cfg into cfg strobes), re-primes via a write to group 0x12, and reads
+// any channel's drain pointer via F9 group 0x11 (index = { ch[2:0], byte[1:0] }).
+hx_mixer_cfg u_mixer_cfg (
+  .clk(CLK2), .rst(1'b0),
+  .reg_we(reg_we & (reg_group == 8'h11)), .reg_index(reg_index), .reg_value(reg_value),
+  .cfg_we(mixcfg_we), .cfg_ch(mixcfg_ch), .cfg_field(mixcfg_field), .cfg_data(mixcfg_data)
+);
+`endif
 `elsif HX421_AUDIO_TONE
 // ---- HX-421 H4a: audio-seam bring-up ------------------------------------
 // Replace the MSU DAC feed with a standalone square-wave tone through the
@@ -776,6 +818,7 @@ mcu_cmd snes_mcu_cmd(
   .snescmd_data_out(snescmd_data_out_mcu),
   .snescmd_data_in(snescmd_data_in_mcu),
   .mbox_mcu_rdata(mbox_mcu_rdata),
+  .mixpos_mcu_rdata(mixpos_mcu_rdata),
   .cheat_pgm_idx_out(cheat_pgm_idx),
   .cheat_pgm_data_out(cheat_pgm_data),
   .cheat_pgm_we_out(cheat_pgm_we)

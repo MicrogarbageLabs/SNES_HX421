@@ -56,6 +56,20 @@ module hx_mixer_dac #(
   input         rom_rd_ack,
   input  signed [15:0] rom_rd_data,
   output [23:0] drain_pos,       // channel 0 read position (STM32 drain pointer)
+
+  // ---- media: external cfg (from hx_mixer_cfg, STM32-driven) + per-channel pos ----
+  //  After the boot FSM finishes its initial config+prime (cfg_done), ext_cfg_en=1
+  //  hands the mixer's config bus + prime to the STM32 so it can set up streaming
+  //  channels (vol/pan/step/loop_len) and re-prime. ext_cfg_en=0 = the stock demo,
+  //  byte-identical. pos_sel/pos_out give the STM32 any channel's drain pointer.
+  input         ext_cfg_en,
+  input         ext_cfg_we,
+  input  [2:0]  ext_cfg_ch,
+  input  [2:0]  ext_cfg_field,
+  input  [31:0] ext_cfg_data,
+  input         ext_prime,       // STM32 re-prime pulse (after (re)configuring streams)
+  input  [2:0]  pos_sel,
+  output [23:0] pos_out,
   // diagnostic bus (served at the SNES read window)
   output [7:0] dbg_tick,    // ++ each DAC sample tick
   output [7:0] dbg_mix,     // ++ each mixer frame produced (out_valid)
@@ -182,16 +196,24 @@ module hx_mixer_dac #(
                        : 8'd0;                                // both
   wire [7:0] mute_mask = toggle_mask | ext_mute;              // ext_mute = SNES button control
 
+  // media: after boot config completes, route the config bus + prime from the
+  // STM32 (hx_mixer_cfg). ext_cfg_en=0 -> the boot FSM drives everything (demo).
+  wire        eff_cfg_we    = (ext_cfg_en & cfg_done) ? ext_cfg_we    : cfg_we;
+  wire [2:0]  eff_cfg_ch    = (ext_cfg_en & cfg_done) ? ext_cfg_ch    : cfg_ch_r;
+  wire [2:0]  eff_cfg_field = (ext_cfg_en & cfg_done) ? ext_cfg_field : cfg_field;
+  wire [31:0] eff_cfg_data  = (ext_cfg_en & cfg_done) ? ext_cfg_data  : cfg_data;
+  wire        eff_prime     = mix_prime | (ext_cfg_en & ext_prime);
+
   hx_mixer_seq #(.N(8), .CHW(3)) u_mix (
     .clk(clkin), .rst(por_rst),
-    .cfg_we(cfg_we), .cfg_ch(cfg_ch_r), .cfg_field(cfg_field), .cfg_data(cfg_data),
+    .cfg_we(eff_cfg_we), .cfg_ch(eff_cfg_ch), .cfg_field(eff_cfg_field), .cfg_data(eff_cfg_data),
     .ch_mute(mute_mask),
     .headroom_bits(4'd0), .out_shift(4'd0), .out_offset(32'sd0),
     .out_min(-32'sd32768), .out_max(32'sd32767),
-    .start(mix_prime), .render(mix_render),
+    .start(eff_prime), .render(mix_render),
     .rd_req(rd_req), .rd_ch(rd_ch), .rd_addr(rd_addr), .rd_ack(rd_ack), .rd_data(rd_data),
     .out_l(mix_l), .out_r(mix_r), .out_valid(mix_valid), .busy(mix_busy),
-    .pos0(drain_pos)
+    .pos0(drain_pos), .pos_sel(pos_sel), .pos_out(pos_out)
   );
 
   // hold the finished frame as the DAC input

@@ -102,6 +102,9 @@ module mcu_cmd(
   // HX-421 media command mailbox read-back (group 0x10 via F9); driven
   // combinationally from main.v = mailbox[index_read_buf]. 0 when disabled.
   input [7:0] mbox_mcu_rdata,
+  // HX-421 mixer per-channel drain-pointer read-back (group 0x11 via F9); driven
+  // from main.v = pos_out byte selected by index_read_buf. 0 when disabled.
+  input [7:0] mixpos_mcu_rdata,
 
   // snes cmd interface
   input [7:0] snescmd_data_in,
@@ -533,7 +536,8 @@ always @(posedge clk) begin
           //if (group_read_buf == 8'h01) MCU_DATA_IN_BUF <= trc_config_data_in;
           // HX-421 media command mailbox read (group 0x10): index_read_buf is the
           // mailbox offset, mbox_mcu_rdata = mailbox[index] driven from main.v.
-          if (group_read_buf == 8'h10) MCU_DATA_IN_BUF <= mbox_mcu_rdata;
+          if      (group_read_buf == 8'h10) MCU_DATA_IN_BUF <= mbox_mcu_rdata;    // media mailbox
+          else if (group_read_buf == 8'h11) MCU_DATA_IN_BUF <= mixpos_mcu_rdata;  // mixer drain ptr
           else
             MCU_DATA_IN_BUF <= 0;
         end
