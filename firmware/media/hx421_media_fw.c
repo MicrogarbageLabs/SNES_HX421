@@ -89,15 +89,20 @@ static int fw_offload(void *ctx, int s, uint32_t psram_addr,
 #define PRIME_GROUP 0x12u
 #define BASE_GROUP  0x13u   /* per-channel PSRAM ring base (3 bytes: {ch,byte}) */
 
-/* Read the mixer's real per-channel drain pointer (sample index) and convert to
- * a byte offset within the ring, so the arbiter refills at the true drain rate. */
+/* Read a mixer channel's 24-bit drain pointer (sample index) via F9 group 0x11. */
+static uint32_t fw_read_pos(uint8_t ch) {
+    return (uint32_t) fpga_read_config(MIXER_GROUP, (uint8_t)((ch << 2) | 0))
+         | ((uint32_t)fpga_read_config(MIXER_GROUP, (uint8_t)((ch << 2) | 1)) << 8)
+         | ((uint32_t)fpga_read_config(MIXER_GROUP, (uint8_t)((ch << 2) | 2)) << 16);
+}
+
+/* A stereo stream occupies TWO mixer channels (2s = left lane, 2s+1 = right),
+ * each reading one interleaved lane at step 2.0. The drain pointer comes from the
+ * left lane: one sample per frame, so bytes consumed = pos * 2 (frame = 4 B). */
 static uint32_t fw_read_ptr(void *ctx, int s) {
     (void)ctx;
     if (s < 0 || s >= HX421_STREAM_MAX || FW.b[s].ring_size == 0) return 0;
-    uint32_t pos = (uint32_t) fpga_read_config(MIXER_GROUP, (uint8_t)((s << 2) | 0))
-                 | ((uint32_t)fpga_read_config(MIXER_GROUP, (uint8_t)((s << 2) | 1)) << 8)
-                 | ((uint32_t)fpga_read_config(MIXER_GROUP, (uint8_t)((s << 2) | 2)) << 16);
-    uint32_t bytes = pos * 4u;                     /* stereo 16-bit frame = 4 B */
+    uint32_t bytes = fw_read_pos((uint8_t)(2 * s)) * 2u;
     return bytes % FW.b[s].ring_size;
 }
 
@@ -151,38 +156,51 @@ static void mixcfg_write(uint8_t ch, uint8_t field, uint32_t data, int nbytes) {
                           (uint8_t)(data >> (b * 8)), 0);
 }
 
-/* Configure/enable a mixer channel. On enable, set the full streaming config
- * (native-rate step, active+loop, loop_len = the ring in frames, gain, pan) and
- * re-prime; on disable, clear the active flag. Pan is a linear balance law
- * (matches the C reference's mixer_set_pan). Gain/pan are Q15. */
+/* Write a channel's 24-bit PSRAM ring base via FA group 0x13 (3 bytes). */
+static void fw_write_base(uint8_t ch, uint32_t base) {
+    fpga_write_config(BASE_GROUP, (uint8_t)((ch << 2) | 0), (uint8_t)(base),       0);
+    fpga_write_config(BASE_GROUP, (uint8_t)((ch << 2) | 1), (uint8_t)(base >> 8),  0);
+    fpga_write_config(BASE_GROUP, (uint8_t)((ch << 2) | 2), (uint8_t)(base >> 16), 0);
+}
+
+/* Configure one interleaved-stereo lane: step 2.0 (reads every other sample),
+ * loop over the whole ring, at `vol`, panned hard to one side. */
+static void fw_cfg_lane(uint8_t ch, uint32_t base, uint32_t loop_samples,
+                        uint16_t vol, int right) {
+    fw_write_base(ch, base);
+    mixcfg_write(ch, 0, 0x00000000u, 4);          /* step_lo = 0            */
+    mixcfg_write(ch, 1, 0x00000002u, 4);          /* step_hi = 2 -> 2.0     */
+    mixcfg_write(ch, 6, loop_samples, 3);         /* loop_len (samples)     */
+    mixcfg_write(ch, 3, vol, 2);                  /* vol                    */
+    mixcfg_write(ch, 4, right ? 0u : 0x7FFFu, 2); /* pan_l (0 on the R lane)*/
+    mixcfg_write(ch, 5, right ? 0x7FFFu : 0u, 2); /* pan_r (0 on the L lane)*/
+    mixcfg_write(ch, 2, 0x0000000Au, 1);          /* flags: active + loop   */
+}
+
+/* Enable/disable a STEREO stream. Each stream is an interleaved 16-bit stereo
+ * ring mapped to two mixer channels: 2s reads the left lane (base+0, step 2.0,
+ * hard-left), 2s+1 the right lane (base+2, step 2.0, hard-right). `pan` is unused
+ * for a stereo stream (the lanes are the pan); `gain` scales both. On enable,
+ * configure both lanes + re-prime; on disable, clear active on both. */
 static void fw_mixer_ctl(void *ctx, int s, int enable, uint8_t gain, uint8_t pan) {
-    (void)ctx;
+    (void)ctx; (void)pan;
     if (s < 0 || s >= HX421_STREAM_MAX) return;
+    uint8_t chL = (uint8_t)(2 * s), chR = (uint8_t)(2 * s + 1);
+    if (chR > 7) return;                          /* 8 mixer channels = 4 stereo slots */
 
     if (!enable) {
-        mixcfg_write((uint8_t)s, 2, 0x00000000u, 1);        /* flags: inactive */
+        mixcfg_write(chL, 2, 0x00000000u, 1);     /* flags: inactive */
+        mixcfg_write(chR, 2, 0x00000000u, 1);
         return;
     }
 
-    uint16_t vol   = (uint16_t)(((uint32_t)gain * 32767u) / 255u);
-    uint16_t pan_l = (pan <= 128) ? 32767u : (uint16_t)((uint32_t)32767u * (255u - pan) / 127u);
-    uint16_t pan_r = (pan >= 128) ? 32767u : (uint16_t)((uint32_t)32767u * pan / 127u);
-    uint32_t loop_frames = FW.b[s].ring_size / 4u;          /* stereo 16-bit frames */
-
-    /* tell the mixer where this channel's ring lives in PSRAM (3 bytes, 24-bit) */
+    uint16_t vol = (uint16_t)(((uint32_t)gain * 32767u) / 255u);
     uint32_t base = FW.b[s].psram_base;
-    fpga_write_config(BASE_GROUP, (uint8_t)(((unsigned)s << 2) | 0), (uint8_t)(base),       0);
-    fpga_write_config(BASE_GROUP, (uint8_t)(((unsigned)s << 2) | 1), (uint8_t)(base >> 8),  0);
-    fpga_write_config(BASE_GROUP, (uint8_t)(((unsigned)s << 2) | 2), (uint8_t)(base >> 16), 0);
+    uint32_t loop_samples = FW.b[s].ring_size / 2u;   /* total 16-bit samples in the ring */
 
-    mixcfg_write((uint8_t)s, 0, 0x00000000u, 4);            /* step_lo = 0            */
-    mixcfg_write((uint8_t)s, 1, 0x00000001u, 4);            /* step_hi = 1 -> 1.0     */
-    mixcfg_write((uint8_t)s, 6, loop_frames, 3);            /* loop_len (24-bit)      */
-    mixcfg_write((uint8_t)s, 3, vol, 2);                    /* vol                    */
-    mixcfg_write((uint8_t)s, 4, pan_l, 2);                  /* pan_l                  */
-    mixcfg_write((uint8_t)s, 5, pan_r, 2);                  /* pan_r                  */
-    mixcfg_write((uint8_t)s, 2, 0x0000000Au, 1);            /* flags: active + loop   */
-    fpga_write_config(PRIME_GROUP, 0, 0, 0);               /* re-prime the channels  */
+    fw_cfg_lane(chL, base,      loop_samples, vol, /*right=*/0);
+    fw_cfg_lane(chR, base + 2u, loop_samples, vol, /*right=*/1);
+    fpga_write_config(PRIME_GROUP, 0, 0, 0);          /* re-prime the channels */
 }
 
 /* Poll the SNES->cart command mailbox (hx_cmdbox_snes, FPGA base). The 65816
