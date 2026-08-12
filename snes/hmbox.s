@@ -6,16 +6,18 @@
 ;  back. This ROM exercises the SNES half in isolation (no STM32): write four
 ;  bytes + doorbell, read them back, and read the pending flag at $3F:F1FD.
 ;
-;  Three distinguishable outcomes (the read bytes are shown raw so they cannot be
-;  confused):
+;  The verdict keys on the READ-back bytes (raw, so they cannot be confused);
+;  PEND is informational because the M4 media service consumes the command:
 ;      255 255 255 255            -> our core is NOT loaded (ROM filler)
-;      0   0   0   0   (pend 0)   -> core loaded, but SNES writes are NOT reaching
+;      0   0   0   0              -> core loaded, but SNES writes are NOT reaching
 ;                                    the mailbox (the interesting failure)
-;      17  34  51  68  (pend 1)   -> MAILBOX OK — the whole write/doorbell/read
-;                                    path works on silicon
+;      17  34  51  68             -> MAILBOX OK — the registered core is loaded and
+;                                    the SNES write/doorbell reached the mailbox.
+;                                    PEND 0 = the M4 arbiter polled+consumed it;
+;                                    PEND 1 = no consumer (base/OBC1 firmware).
 ;
-;  Load on BASE firmware by overriding the OBC1 core (header carttype 0x25 ->
-;  /sd2snes/fpga_obc1.bi3). Public domain (CC0). No warranty.
+;  Header carttype 0xE4 -> our firmware loads /sd2snes/fpga_hx421.bi3 (its own
+;  slot; OBC1 untouched). Public domain (CC0). No warranty.
 ; ============================================================
 
 .p816
@@ -79,7 +81,12 @@ reset:
         lda f:$3FF1FD           ; pending status
         sta PEND
 
-        ; ---- verdict: bytes match AND pending bit0 set --------------
+        ; ---- verdict: the READ bytes match what we wrote ------------
+        ; Keyed on the read-back only (deterministic in both firmwares). PEND is
+        ; shown as info: with the media firmware the M4's cmd_poll consumes the
+        ; command, so PEND reads 0 (proof the arbiter is polling); with no
+        ; consumer (base/OBC1) it stays 1. Either way a correct READ proves the
+        ; registered core loaded and the SNES write reached the mailbox.
         lda #1
         sta MATCH
         lda MB+0
@@ -97,10 +104,6 @@ reset:
 :       lda MB+3
         cmp #$44
         beq :+
-        stz MATCH
-:       lda PEND
-        and #$01
-        bne :+
         stz MATCH
 :
 
@@ -165,8 +168,8 @@ spin:   bra spin
 str_title:  .byte "HX421 MAILBOX 3F:F1xx", 0
 str_read:   .byte "READ", 0
 str_pend:   .byte "PEND", 0
-str_ok:     .byte "MAILBOX OK  WRITE+DOORBELL", 0
-str_bad:    .byte "MAILBOX FAIL (SEE READ/PEND)", 0
+str_ok:     .byte "MAILBOX OK  (READ MATCHES)", 0
+str_bad:    .byte "MAILBOX FAIL (SEE READ ROW)", 0
 
 .include "textmode.inc"
 

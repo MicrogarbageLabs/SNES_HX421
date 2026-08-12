@@ -1,12 +1,13 @@
 <#
-  build-hmbox.ps1 — build the HX-421 mailbox test ROM (OBC1-override).
+  build-hmbox.ps1 — build the HX-421 mailbox test ROM (registered core).
 
     .\snes\build-hmbox.ps1
 
-  Produces snes\build\hmbox.sfc: a LoROM image with an OBC1 header (carttype
-  0x25) so BASE sd2snes firmware programs /sd2snes/fpga_obc1.bi3 — where you put
-  our media core (snes\build\fpga_obc1_media.bi3, renamed). It writes a command
-  block + doorbell to $3F:F1xx and reads it back. See docs\bringup.md.
+  Produces snes\build\hmbox.sfc: a LoROM image with an HX-421 header (carttype
+  0xE4) so OUR firmware programs /sd2snes/fpga_hx421.bi3 (its own slot, OBC1
+  untouched). It writes a command block + doorbell to $3F:F1xx and reads it back.
+  Requires the media firmware flashed (registers 0xE4 + runs the stream arbiter).
+  See docs\bringup.md.
 
   Public domain (CC0). No warranty.
 #>
@@ -41,8 +42,8 @@ $bytes[$hdr + 0x1F] = [byte](($sum -shr 8) -band 0xFF)
 Step ("checksum {0:X4}" -f $sum)
 
 $type = $bytes[$hdr + 0x16]
-if ($type -ne 0x25) { throw ("carttype is {0:X2}, expected 25 (OBC1 override)" -f $type) }
-Step "carttype 25 -> BASE firmware selects /sd2snes/fpga_obc1.bi3"
+if ($type -ne 0xE4) { throw ("carttype is {0:X2}, expected E4 (HX-421 registered core)" -f $type) }
+Step "carttype E4 -> our firmware selects /sd2snes/fpga_hx421.bi3"
 
 # The mailbox window must land on ROM FILLER, or the "core not loaded" case would
 # read real ROM bytes instead of $FF. Bank $3F of a 128 KB LoROM mirrors to bank
@@ -57,11 +58,12 @@ if (($fill | Where-Object { $_ -ne 0xFF }).Count -ne 0) {
 }
 
 Write-Host ""
-Write-Host "On the SD card (BASE firmware):" -ForegroundColor Green
-Write-Host "  1. back up /sd2snes/fpga_obc1.bi3"
-Write-Host "  2. copy snes\build\fpga_obc1_media.bi3 -> /sd2snes/fpga_obc1.bi3"
+Write-Host "On the SD card (our media firmware flashed):" -ForegroundColor Green
+Write-Host "  1. flash firmware.img (registers 0xE4 + runs the stream arbiter) - OBC1 untouched"
+Write-Host "  2. copy snes\build\fpga_hx421.bi3 -> /sd2snes/  (its own slot)"
 Write-Host "  3. copy snes\build\hmbox.sfc -> anywhere browsable, run it"
 Write-Host ""
-Write-Host "  READ 17 34 51 68  PEND 1  + MAILBOX OK  = the mailbox path works on silicon"
-Write-Host "  READ 0 0 0 0      PEND 0            = core loaded, SNES writes not reaching it"
-Write-Host "  READ 255 255 255 255               = our core is not loaded"
+Write-Host "  READ 17 34 51 68  + MAILBOX OK  = registered core loaded, SNES write reached mailbox"
+Write-Host "     PEND 0 = M4 arbiter polled+consumed it; PEND 1 = no consumer"
+Write-Host "  READ 0 0 0 0                    = core loaded, SNES writes not reaching it"
+Write-Host "  READ 255 255 255 255            = our core is not loaded"
