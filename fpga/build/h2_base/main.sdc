@@ -125,6 +125,15 @@ set_clock_uncertainty -fall_from [get_clocks {CLKIN}] -fall_to [get_clocks {CLKI
 # Set Multicycle Path
 #**************************************************************
 
+# HX-421: the generic register READ (opcode F9) latches MCU_DATA_IN_BUF only on a
+# completed SPI byte, so the read-address buffers (group_read_buf/index_read_buf,
+# set on the PREVIOUS SPI byte) are stable for ~16 CLK2 cycles before the capture.
+# STA analyses these as single-cycle CLK2->CLK2 paths (a -15ps false violation on
+# the mailbox/mixpos read mux); a 2-cycle multicycle is correct and conservative.
+set_multicycle_path -from [get_registers {*index_read_buf*}] -to [get_registers {*MCU_DATA_IN_BUF*}] -setup 2
+set_multicycle_path -from [get_registers {*index_read_buf*}] -to [get_registers {*MCU_DATA_IN_BUF*}] -hold 1
+set_multicycle_path -from [get_registers {*group_read_buf*}] -to [get_registers {*MCU_DATA_IN_BUF*}] -setup 2
+set_multicycle_path -from [get_registers {*group_read_buf*}] -to [get_registers {*MCU_DATA_IN_BUF*}] -hold 1
 
 
 #**************************************************************
